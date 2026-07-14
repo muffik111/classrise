@@ -2,12 +2,15 @@ import sqlite3
 import os
 import json
 
-# ВАЖНО: На Amvera база должна лежать в /data, иначе её сотрёт при рестарте
-DB_PATH = os.getenv('DATABASE_PATH', '/data/game.db')
+DATA_DIR = '/data'
+DB_FILE = os.path.join(DATA_DIR, 'game.db')
+
+# Создаём директорию, если её нет (Amvera обычно делает это через volumes, но страховка не помешает)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 def get_db():
     """Возвращает соединение с БД. Создаёт таблицу players, если её нет."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row  # Чтобы обращаться к колонкам по имени
     
     cursor = conn.cursor()
