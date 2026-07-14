@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>RPG — Игровой процесс</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 0 15px; }
+    .section { border: 1px solid #ccc; padding: 12px; margin-bottom: 16px; border-radius: 6px; }
+    button { padding: 8px 14px; cursor: pointer; margin-right: 6px; background: #3498db; color: white; border: none; }
+    button:hover { background: #2980b9; }
+    input, select { padding: 6px; margin-right: 8px; }
+    .log { background: #f5f5f5; padding: 10px; border: 1px solid #ddd; min-height: 80px; font-family: monospace; white-space: pre-wrap; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; }
+    .error { color: red; }
+  </style>
+</head>
+<body>
+  <!-- Если сюда зашли без авторизации, кидаем на логин -->
+  <script>
+    if (!localStorage.getItem('player_id')) {
+      window.location.href = '/login.html';
+    }
+  </script>
+
+  <h1>RPG в стиле Lineage 2</h1>
+
+  <!-- Статус и инвентарь -->
+  <div class="section">
+    <h3>Статус героя</h3>
+    <button onclick="getStatus()">Обновить статус</button>
+    <div id="statusBox"></div>
+  </div>
+
+  <!-- Бой -->
+  <div class="section">
+    <h3>Бой</h3>
+    <button onclick="fight()">Сразиться с мобом</button>
+    <div id="fightLog" class="log"></div>
+  </div>
+
+  <!-- Магазин (список предметов) -->
+  <div class="section">
+    <h3>Магазин (предметы)</h3>
+    <p>ID предмета = его номер в базе (1–7).</p>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Название</th><th>Тип</th><th>Бонус ATK</th><th>Бонус DEF</th><th>Цена (Адены)</th></tr>
+      </thead>
+      <tbody id="shopTableBody"></tbody>
+    </table>
+  </div>
+
+  <!-- Надевание предметов -->
+  <div class="section">
+    <h3>Экипировка</h3>
+    <p><strong>Важно:</strong> предмет должен быть в инвентаре.</p>
+    <label>ID оружия:</label>
+    <input type="number" id="equipWeaponId" placeholder="например 2" />
+    <button onclick="equipItem('weapon')">Надеть оружие</button>
+    <br /><br />
+    <label>ID брони:</label>
+    <input type="number" id="equipArmorId" placeholder="например 5" />
+    <button onclick="equipItem('armor')">Надеть броню</button>
+    <div id="equipLog" class="log"></div>
+  </div>
+
+  <!-- Лог ошибок -->
+  <div class="section">
+    <h3>Лог</h3>
+    <div id="globalLog" class="log"></div>
+  </div>
+
+  <script>
+    const API_URL = '';
+    // Берем ID из localStorage, а не из переменной
+    let currentPlayerId = localStorage.getItem('player_id');
+
+    async function apiPost(endpoint, data) {
+      const res = await fetch(API_URL + endpoint, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+      });
+      return await res.json();
+    }
+
+    // Статус
+    async function getStatus() {
+      const statusBox = document.getElementById('statusBox');
+      const log = document.getElementById('globalLog');
+
+      if (!currentPlayerId) {
+        statusBox.innerHTML = '<span class="error">Сначала войдите в игру!</span>';
+        return;
+      }
+
+      try {
+        const r = await apiPost('/status', {player_id: currentPlayerId});
+
+        if (r.error) {
+          statusBox.innerHTML = '<span class="error">' + r.error + '</span>';
+          return;
+        }
+
+        let html = `
+          <p><b>Имя:</b> ${r.name} | <b>Класс:</b> ${r.class} | <b>Ур:</b> ${r.level}</p>
+          <p><b>EXP:</b> ${r.exp}/${r.next_level_exp} | <b>Адены:</b> ${r.aden}</p>
+          <p><b>HP:</b> ${r.current_hp}/${r.max_hp} | <b>ATK:</b> ${r.attack} | <b>DEF:</b> ${r.defense}</p>
+          <p><b>Экипировка:</b> Оружие=${r.equipment.weapon}, Броня=${r.equipment.armor}</p>
+          <p><b>Инвентарь:</b> [${r.inventory.join(', ') || 'пусто'}]</p>
+        `;
+        statusBox.innerHTML = html;
+        log.textContent = '';
+      } catch (e) {
+        log.textContent = 'Ошибка статуса: ' + e.message;
+      }
+    }
+
+    // Бой
+    async function fight() {
+      const log = document.getElementById('fightLog');
+      if (!currentPlayerId) {
+        log.textContent = 'Сначала войдите в игру!';
+        return;
+      }
+      try {
+        const r = await apiPost('/fight', {player_id: currentPlayerId});
+        log.textContent = r.message || JSON.stringify(r, null, 2);
+      } catch (e) {
+        log.textContent = 'Ошибка боя: ' + e.message;
+      }
+    }
+
+    // Магазин
+    function loadShop() {
+      const items = {
+        1: {"name": "Ржавый меч", "type": "weapon", "bonus_attack": 5, "bonus_defense": 0, "price": 100},
+        2: {"name": "Стальной клинок", "type": "weapon", "bonus_attack": 12, "bonus_defense": 0, "price": 250},
+        3: {"name": "Лук новичка", "type": "weapon", "bonus_attack": 8, "bonus_defense": 0, "price": 180},
+        4: {"name": "Деревянный щит", "type": "armor", "bonus_attack": 0, "bonus_defense": 6, "price": 150},
+        5: {"name": "Тяжёлый стальной щит", "type": "armor", "bonus_attack": 0, "bonus_defense": 14, "price": 320},
+        6: {"name": "Кожаная броня", "type": "armor", "bonus_attack": 0, "bonus_defense": 8, "price": 200},
+        7: {"name": "Кольчуга", "type": "armor", "bonus_attack": 0, "bonus_defense": 16, "price": 400},
+      };
+      const tbody = document.getElementById('shopTableBody');
+      tbody.innerHTML = '';
+      Object.entries(items).forEach(([id, item]) => {
+        tbody.insertAdjacentHTML('beforeend', `
+          <tr>
+            <td>${id}</td>
+            <td>${item.name}</td>
+            <td>${item.type}</td>
+            <td>${item.bonus_attack}</td>
+            <td>${item.bonus_defense}</td>
+            <td>${item.price}</td>
+          </tr>
+        `);
+      });
+    }
+
+    // Надевание предмета
+    async function equipItem(slot) {
+      if (!currentPlayerId) {
+        document.getElementById('equipLog').textContent = 'Сначала войдите в игру!';
+        return;
+      }
+      const idInput = document.getElementById(slot === 'weapon' ? 'equipWeaponId' : 'equipArmorId');
+      const itemId = Number(idInput.value);
+      const log = document.getElementById('equipLog');
+
+      if (!itemId || itemId <= 0) {
+        log.textContent = 'Введите корректный ID предмета.';
+        return;
+      }
+
+      try {
+        const r = await apiPost('/equip', {player_id: currentPlayerId, item_id: itemId, slot: slot});
+        log.textContent = r.success ? r.message : ('Ошибка: ' + (r.message || JSON.stringify(r)));
+        setTimeout(getStatus, 500);
+      } catch (e) {
+        log.textContent = 'Ошибка при надевании: ' + e.message;
+      }
+    }
+
+    loadShop();
+  </script>
+</body>
+</html>

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Lineage RPG — Вход</title>
+  <style>
+    body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background: #2c3e50; margin: 0; }
+    .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); width: 350px; }
+    h2 { text-align: center; color: #333; }
+    label { display: block; margin-top: 1rem; font-weight: bold; }
+    input { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; }
+    button { width: 100%; padding: 10px; margin-top: 15px; background: #3498db; color: white; border: none; cursor: pointer; }
+    button:hover { background: #2980b9; }
+    .error { color: red; margin-top: 10px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Lineage RPG</h2>
+
+    <!-- Форма регистрации -->
+    <div id="register-form">
+      <label>Имя героя (будет логином):</label>
+      <input type="text" id="reg-name" placeholder="Например: HeroKing" />
+
+      <label>Класс:</label>
+      <select id="reg-class">
+        <option value="" disabled selected>Выбери класс</option>
+        <option value="Воин">Воин</option>
+        <option value="Лучник">Лучник</option>
+        <option value="Танк">Танк</option>
+        <option value="Друид">Друид</option>
+      </select>
+
+      <label>Пароль:</label>
+      <input type="password" id="reg-password" placeholder="Придумайте пароль (мин. 4 символа)" />
+
+      <button onclick="register()">Создать аккаунт</button>
+      <div id="reg-error" class="error"></div>
+
+      <p style="text-align:center; margin-top:10px;">
+        Есть аккаунт? <a href="#" onclick="showLogin()">Войти</a>
+      </p>
+    </div>
+
+    <!-- Форма входа -->
+    <div id="login-form" style="display:none;">
+      <label>Логин (Имя героя):</label>
+      <input type="text" id="login-name" placeholder="Имя героя" />
+
+      <label>Пароль:</label>
+      <input type="password" id="login-password" placeholder="Ваш пароль" />
+
+      <button onclick="login()">Войти в игру</button>
+      <p style="text-align:center; margin-top:10px;">
+        Нет аккаунта? <a href="#" onclick="showRegister()">Зарегистрироваться</a>
+      </p>
+      <div id="login-error" class="error"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = window.location.origin;
+
+    async function register() {
+      const nameInput = document.getElementById('reg-name');
+      const classInput = document.getElementById('reg-class');
+      const passwordInput = document.getElementById('reg-password');
+      const errorBlock = document.getElementById('reg-error');
+
+      const name = nameInput ? nameInput.value.trim() : '';
+      const cls = classInput ? classInput.value.trim() : '';
+      const password = passwordInput ? passwordInput.value.trim() : '';
+
+      if (!name || !cls || !password) {
+        errorBlock.textContent = 'Заполните имя, класс и пароль!';
+        return;
+      }
+
+      try {
+        const res = await fetch(API_URL + '/create-hero', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            name: name,
+            class: cls,
+            password: password
+          })
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (res.ok) {
+          alert('Аккаунт создан! Теперь войдите.');
+          showLogin();
+        } else {
+          const msg = data.error || data.message || 'Ошибка регистрации';
+          errorBlock.textContent = msg;
+        }
+      } catch (e) {
+        errorBlock.textContent = 'Ошибка сети: ' + e.message;
+      }
+    }
+
+    async function login() {
+      const name = document.getElementById('login-name').value.trim();
+      const password = document.getElementById('login-password').value.trim();
+      const errorBlock = document.getElementById('login-error');
+
+      if (!name || !password) {
+        errorBlock.textContent = 'Введите логин и пароль';
+        return;
+      }
+
+      try {
+        const res = await fetch(API_URL + '/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ name, password })
+        });
+        const data = await res.json();
+
+        // Если сервер вернул 200 и данные — вход успешен
+        if (res.status === 200 && data && data.name) {
+          localStorage.setItem('player_id', name);
+          window.location.href = '/game.html';
+        } else {
+          const msg = data.error || data.message || 'Неверный логин или пароль';
+          errorBlock.textContent = msg;
+        }
+      } catch (e) {
+        errorBlock.textContent = 'Ошибка сети';
+      }
+    }
+
+    function showLogin() {
+      document.getElementById('register-form').style.display = 'none';
+      document.getElementById('login-form').style.display = 'block';
+    }
+
+    function showRegister() {
+      document.getElementById('login-form').style.display = 'none';
+      document.getElementById('register-form').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

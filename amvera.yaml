@@ -1,0 +1,8 @@
+meta:
+  environment: python
+  toolchain:
+    name: pip
+    requirements: requirements.txt
+run:
+  command: gunicorn --bind 0.0.0.0:5000 server:app
+  containerPort: 5000
