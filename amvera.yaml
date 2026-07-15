@@ -3,6 +3,12 @@ meta:
   toolchain:
     name: pip
     requirements: requirements.txt
+
 run:
   command: gunicorn --bind 0.0.0.0:5000 server:app
   containerPort: 5000
+
+volumes:
+  - source: data
+    target: /data
+    mode: rw
