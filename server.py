@@ -7,8 +7,7 @@ from flask import Flask, request, send_from_directory, jsonify
 app = Flask(__name__)
 
 # --- НАСТРОЙКИ БД ---
-# На Amvera папка /data — это persistent storage. Не создавай её локально.
-DB_PATH = '/data/game.db'
+DB_PATH = '/data/game.db'  # Amvera: persistent storage
 
 def get_db():
     """Возвращает соединение с SQLite. Создаёт таблицу players, если её нет."""
@@ -37,10 +36,9 @@ def get_db():
     return conn
 
 def init_db():
-    """Инициализация БД при старте сервера."""
     get_db()
 
-init_db()  # Сразу создаём таблицу, если нет
+init_db()  # Инициализация при старте
 
 
 # Предметы (база по ID)
@@ -60,7 +58,6 @@ def calc_stats(hero):
     bonus_atk = 0
     bonus_def = 0
 
-    # Парсим JSON оборудования
     try:
         equipment = json.loads(hero['equipment_json'])
     except Exception:
@@ -107,7 +104,6 @@ def login():
     if not row:
         return jsonify({'error': 'Игрок не найден'}), 404
 
-    # Преобразуем строку в список для инвентаря
     try:
         inventory = json.loads(row['inventory_json'])
     except Exception:
@@ -133,7 +129,7 @@ def login():
 @app.route('/status', methods=['POST'])
 def status():
     data = request.get_json() or {}
-    player_name = (data.get('player_id') or '').strip()  # player_id здесь это имя героя
+    player_name = (data.get('player_id') or '').strip()
     if not player_name:
         return jsonify({"error": "Имя игрока обязательно"}), 400
 
@@ -232,25 +228,31 @@ def create_hero():
             "allowed": list(class_stats.keys())
         }), 400
 
-    # Попытка регистрации через SQL
     conn = get_db()
     cur = conn.cursor()
 
-    # Проверяем существование
     cur.execute("SELECT id FROM players WHERE name = ?", (name,))
     if cur.fetchone():
         conn.close()
         return jsonify({"error": "Ник уже занят"}), 409
 
-    # Вставляем нового игрока
+    # ✅ Теперь сохраняем inventory_json и equipment_json явно
     cur.execute('''
-        INSERT INTO players (name, class, attack, defense, max_hp, current_hp)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (name, normalized_cls, stats['attack'], stats['defense'], 100, 100))
+        INSERT INTO players (name, class, attack, defense, max_hp, current_hp, inventory_json, equipment_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        name,
+        normalized_cls,
+        stats['attack'],
+        stats['defense'],
+        100,
+        100,
+        '[]',
+        '{"weapon": null, "armor": null}'
+    ))
     conn.commit()
     conn.close()
 
-    # Возвращаем данные игрока
     player = {
         "name": name,
         "class": normalized_cls,
@@ -284,7 +286,6 @@ def fight():
         conn.close()
         return jsonify({'success': False, 'message': 'Игрок не найден.'}), 404
 
-    # Восстанавливаем данные из строки БД
     try:
         inventory = json.loads(row['inventory_json'])
     except Exception:
@@ -311,7 +312,6 @@ def fight():
 
     if h['current_hp'] <= 0:
         h['current_hp'] = max(0, h['max_hp'] // 2)
-        # Обновляем HP сразу, чтобы не было «мёртвого» статуса
         cur.execute("UPDATE players SET current_hp = ? WHERE name = ?", (h['current_hp'], h['name']))
         conn.commit()
         conn.close()
@@ -370,11 +370,14 @@ def fight():
         h['current_hp'] = h['max_hp']
         level_up = True
 
-    # Обновляем все поля игрока в БД
     cur.execute('''
         UPDATE players
-        SET level = ?, exp = ?, next_level_exp = ?, adenas = ?,
-            max_hp = ?, current_hp = ?
+        SET level = ?,
+            exp = ?,
+            next_level_exp = ?,
+            adenas = ?,
+            max_hp = ?,
+            current_hp = ?
         WHERE name = ?
     ''', (
         h['level'],
@@ -492,9 +495,8 @@ def admin_players():
         })
     return jsonify(players)
 
-@app.route("/status", methods=["GET", "POST"])
-def status():
-    return jsonify({"ok": True, "service": "ClassRise", "version": "1.0"})
+# ВАЖНО: этот дублирующийся /status удалён — он перекрывал настоящий статус игрока.
+# Теперь работает только POST /status, который возвращает полные данные героя.
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
