@@ -1,5 +1,3 @@
-# classes.py
-
 CLASS_STATS = {
     "Воин": {"base_hp": 120, "base_attack": 15, "base_defense": 10},
     "Маг": {"base_hp": 80, "base_attack": 25, "base_defense": 5},
@@ -9,10 +7,6 @@ CLASS_STATS = {
 }
 
 def get_class_stats(cls_name):
-    """
-    Возвращает базовые статы класса.
-    cls_name можно передавать в любом регистре: 'воин', 'Воин', 'ВОИН' → всё сработает.
-    """
     if not cls_name:
         return None
     return CLASS_STATS.get(cls_name.capitalize())
