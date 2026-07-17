@@ -9,7 +9,7 @@ import sqlite3
 from flask import Flask, request, send_from_directory, jsonify, session, g
 
 # Импорты твоего проекта
-from db import get_db, migrate_players_table
+from db import get_db
 from items import ITEMS_DB, calc_stats
 from classes import get_class_stats
 # from cities import is_location_accessible, get_location_info  # раскомментируй, если есть
