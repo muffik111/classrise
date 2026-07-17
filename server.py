@@ -6,7 +6,8 @@ from datetime import datetime
 from functools import wraps
 import time
 import sqlite3
-from flask import Flask, request, send_from_directory, jsonify, session
+from flask import Flask, request, send_from_directory, jsonify, session, g
+
 # Импорты твоего проекта
 from db import get_db
 from items import ITEMS_DB, calc_stats
