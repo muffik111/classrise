@@ -5,6 +5,133 @@ import sqlite3
 from flask import Flask, request, send_from_directory, jsonify
 
 app = Flask(__name__)
+# db.py (лучше переименовать из общего файла, чтобы не конфликтовало)
+import sqlite3
+import os
+import json
+
+DATA_DIR = '/data'
+DB_FILE = os.path.join(DATA_DIR, 'game.db')
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def get_db():
+    """Возвращает соединение с БД. Создаёт таблицу players, если её нет."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row  # Чтобы обращаться к колонкам по имени
+    cursor = conn.cursor()
+
+    # Создаём таблицу с нужными колонками и без лишнего stats_json
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS players (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            class TEXT NOT NULL,
+
+            level INTEGER DEFAULT 1,
+            exp INTEGER DEFAULT 0,
+
+            adenas INTEGER DEFAULT 0,
+
+            attack INTEGER DEFAULT 0,
+            defense INTEGER DEFAULT 0,
+
+            current_hp INTEGER DEFAULT 100,
+            max_hp INTEGER DEFAULT 100,
+
+            inventory_json TEXT DEFAULT '[]',
+            equipment_json TEXT DEFAULT '{"weapon": null, "armor": null}',
+
+            current_loc_id INTEGER,
+
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    return conn
+
+def migrate_players_table():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    columns = [
+        "exp", "current_loc_id", "inventory_json", "equipment_json"
+    ]
+    for col in columns:
+        try:
+            cursor.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER")
+        except sqlite3.OperationalError:
+            # Колонка уже есть — ок
+            pass
+
+    # Для JSON колонок лучше явно задать дефолт, если они NULL
+    cursor.execute("UPDATE players SET inventory_json = '[]' WHERE inventory_json IS NULL")
+    cursor.execute("UPDATE players SET equipment_json = '{}' WHERE equipment_json IS NULL OR equipment_json = ''")
+
+    conn.commit()
+    conn.close()
+
+
+
+def create_table():
+    get_db()
+
+
+def register_player(name, cls, base_stats):
+    """
+    Регистрирует игрока.
+    base_stats: dict с base_attack, base_defense (или можно считать по классу).
+    Возвращает данные игрока или None, если ник занят.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # Проверяем, есть ли такой ник
+        cursor.execute("SELECT * FROM players WHERE name = ?", (name,))
+        if cursor.fetchone():
+            return None  # Ник занят
+
+        # Начальные статы
+        base_attack = base_stats.get("base_attack", 10)
+        base_defense = base_stats.get("base_defense", 5)
+        max_hp = 100
+        current_hp = max_hp
+
+        # Инвентарь и экипировка — пустые структуры
+        inventory_str = json.dumps([])
+        equipment_str = json.dumps({"weapon": None, "armor": None})
+
+        cursor.execute('''
+            INSERT INTO players (
+                name, class, level, exp, adenas,
+                attack, defense, current_hp, max_hp,
+                inventory_json, equipment_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            name, cls, 1, 0, 0,
+            base_attack, base_defense, current_hp, max_hp,
+            inventory_str, equipment_str
+        ))
+
+        conn.commit()
+
+        return {
+            "name": name,
+            "class": cls,
+            "level": 1,
+            "exp": 0,
+            "aden": 0,
+            "attack": base_attack,
+            "defense": base_defense,
+            "current_hp": current_hp,
+            "max_hp": max_hp,
+            "inventory": [],
+            "equipment": {"weapon": None, "armor": None},
+        }
+    except Exception as e:
+        print(f"DB Error: {e}")
+        return None
 
 # --- НАСТРОЙКИ БД ---
 DB_PATH = '/data/game.db'  # Amvera: persistent storage
@@ -399,6 +526,140 @@ def fight():
         'message': message,
         'player_id': player_name,
     })
+
+@app.route('/api/augment', methods=['POST'])
+def api_augment():
+    data = request.get_json(silent=True) or {}
+    player_id = (data.get('player_id') or '').strip()
+    location = data.get('location')
+    index = data.get('index')
+    slot = data.get('slot')
+
+    if not player_id or not location:
+        return jsonify({"error": "Недостаточно данных"}), 400
+
+    from augment import load_player, perform_augment
+
+    hero = load_player(player_id)
+    if not hero:
+        return jsonify({"error": "Игрок не найден"}), 404
+
+    key = index if location == 'inventory' else slot
+    success, message, partial = perform_augment(hero, location, key)
+
+    response_data = {
+        "success": success,
+        "message": message,
+        **partial,
+    }
+    return jsonify(response_data), 200
+
+@app.route('/api/battle', methods=['POST'])
+def api_battle():
+    data = request.get_json(silent=True) or {}
+    player_id = (data.get('player_id') or '').strip()
+    mob_id = data.get('mob_id')
+
+    if not player_id or not mob_id:
+        return jsonify({"error": "Недостаточно данных"}), 400
+
+    from augment import load_player, save_player
+    from battle import run_battle
+
+    hero = load_player(player_id)
+    if not hero:
+        return jsonify({"error": "Игрок не найден"}), 404
+
+    result = run_battle(hero, mob_id)
+
+    # Сохраняем изменения (EXP, уровень, HP, инвентарь, статы)
+    save_player(hero)
+
+    response_data = {
+        "success": result["success"],
+        "won": result["won"],
+        "rounds": result["rounds"],
+        "player": result["player_updated"],
+        "message": result.get("message", ""),
+    }
+    return jsonify(response_data), 200
+
+@app.route('/api/move', methods=['POST'])
+def api_move():
+    data = request.get_json(silent=True) or {}
+    player_id = (data.get('player_id') or '').strip()
+    loc_id = data.get('loc_id')
+
+    if not player_id or loc_id is None:
+        return jsonify({"error": "Недостаточно данных"}), 400
+
+    from augment import load_player, save_player
+    import cities
+
+    hero = load_player(player_id)
+    if not hero:
+        return jsonify({"error": "Игрок не найден"}), 404
+
+    # Проверка доступности локации
+    if not cities.is_location_accessible(hero["level"], loc_id):
+        return jsonify({
+            "success": False,
+            "message": "❌ Эта локация слишком сложна для вашего уровня. Повысьте уровень или выберите другую."
+        }), 403
+
+    # Сохраняем текущую локацию у игрока (добавь колонку current_loc_id в players)
+    hero["current_loc_id"] = loc_id
+    save_player(hero)
+
+    loc_info = cities.get_location_info(loc_id)
+    city_info = next((c for c in cities.CITIES if c["id"] == loc_info["city_id"]), None)
+
+    return jsonify({
+        "success": True,
+        "message": f"✅ Вы переместились в локацию: {loc_info['name']}",
+        "location": loc_info,
+        "city": city_info,
+        "player": {
+            "current_loc_id": loc_id,
+            "level": hero["level"],
+        },
+    }), 200
+
+@app.route('/api/start_battle', methods=['POST'])
+def api_start_battle():
+    data = request.get_json(silent=True) or {}
+    player_id = (data.get('player_id') or '').strip()
+
+    if not player_id:
+        return jsonify({"error": "Недостаточно данных"}), 400
+
+    from augment import load_player, save_player
+    from battle import run_battle
+    import cities
+    from mobs import MOBS
+
+    hero = load_player(player_id)
+    if not hero:
+        return jsonify({"error": "Игрок не найден"}), 404
+
+    loc_id = hero.get("current_loc_id")
+    if not loc_id:
+        return jsonify({"error": "Сначала переместитесь в локацию через /api/move"}), 400
+
+    mob_id = cities.get_mob_id_for_location(loc_id, hero["level"])
+    if not mob_id:
+        return jsonify({"error": "В этой локации нет подходящих мобов"}), 500
+
+    result = run_battle(hero, mob_id)
+    save_player(hero)
+
+    return jsonify({
+        "success": result["success"],
+        "won": result["won"],
+        "rounds": result["rounds"],
+        "mob": MOBS.get(mob_id),
+        "player": result["player_updated"],
+    }), 200
 
 
 @app.route('/equip', methods=['POST'])
