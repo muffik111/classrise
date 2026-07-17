@@ -494,6 +494,13 @@ def admin_players():
             "defense": r["defense"],
         })
     return jsonify(players)
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
 
 # ВАЖНО: этот дублирующийся /status удалён — он перекрывал настоящий статус игрока.
 # Теперь работает только POST /status, который возвращает полные данные героя.
