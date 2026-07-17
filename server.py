@@ -4,10 +4,9 @@ import random
 import logging
 from datetime import datetime
 from functools import wraps
-
+import time
 import sqlite3
-from flask import Flask, request, send_from_directory, jsonify, session, g
-
+from flask import Flask, request, send_from_directory, jsonify, session
 # Импорты твоего проекта
 from db import get_db
 from items import ITEMS_DB, calc_stats
