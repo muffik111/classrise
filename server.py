@@ -1,210 +1,109 @@
 import os
 import json
 import random
-import sqlite3
-from flask import Flask, request, send_from_directory, jsonify
+import logging
+from datetime import datetime
+from functools import wraps
 
-app = Flask(__name__)
-# db.py (лучше переименовать из общего файла, чтобы не конфликтовало)
 import sqlite3
-import os
-import json
+from flask import Flask, request, send_from_directory, jsonify, session, g
+
+# Импорты твоего проекта
+from db import get_db, migrate_players_table
+from items import ITEMS_DB, calc_stats
+from classes import get_class_stats
+# from cities import is_location_accessible, get_location_info  # раскомментируй, если есть
 
 DATA_DIR = '/data'
 DB_FILE = os.path.join(DATA_DIR, 'game.db')
-
 os.makedirs(DATA_DIR, exist_ok=True)
 
-def get_db():
-    """Возвращает соединение с БД. Создаёт таблицу players, если её нет."""
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row  # Чтобы обращаться к колонкам по имени
-    cursor = conn.cursor()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
 
-    # Создаём таблицу с нужными колонками и без лишнего stats_json
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            class TEXT NOT NULL,
+app = Flask(__name__)
+# На Amvera обязательно задай переменную окружения SECRET_KEY
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
-            level INTEGER DEFAULT 1,
-            exp INTEGER DEFAULT 0,
 
-            adenas INTEGER DEFAULT 0,
-
-            attack INTEGER DEFAULT 0,
-            defense INTEGER DEFAULT 0,
-
-            current_hp INTEGER DEFAULT 100,
-            max_hp INTEGER DEFAULT 100,
-
-            inventory_json TEXT DEFAULT '[]',
-            equipment_json TEXT DEFAULT '{"weapon": null, "armor": null}',
-
-            current_loc_id INTEGER,
-
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    return conn
-
-def migrate_players_table():
+# -----------------------------------------------------------------------------
+# Миграции БД (чат + нормализация игроков)
+# -----------------------------------------------------------------------------
+def migrate_db():
+    logger.info("Запуск миграций БД...")
     conn = get_db()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    columns = [
-        "exp", "current_loc_id", "inventory_json", "equipment_json"
-    ]
-    for col in columns:
-        try:
-            cursor.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER")
-        except sqlite3.OperationalError:
-            # Колонка уже есть — ок
-            pass
+    # Добавляем колонку is_admin, если нет
+    try:
+        cur.execute("PRAGMA table_info(players)")
+        cols = [c[1] for c in cur.fetchall()]
+        if 'is_admin' not in cols:
+            cur.execute("ALTER TABLE players ADD COLUMN is_admin INTEGER DEFAULT 0")
+            logger.info("Миграция: добавлена колонка is_admin в players")
+    except Exception as e:
+        logger.error(f"Ошибка миграции is_admin: {e}")
 
-    # Для JSON колонок лучше явно задать дефолт, если они NULL
-    cursor.execute("UPDATE players SET inventory_json = '[]' WHERE inventory_json IS NULL")
-    cursor.execute("UPDATE players SET equipment_json = '{}' WHERE equipment_json IS NULL OR equipment_json = ''")
+    # Создаём таблицу чата, если нет
+    try:
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name TEXT NOT NULL,
+                message TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'chat',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        logger.info("Миграция: таблица chat_messages готова")
+    except Exception as e:
+        logger.error(f"Ошибка создания chat_messages: {e}")
 
     conn.commit()
     conn.close()
+    logger.info("Миграции завершены.")
 
 
-
-def create_table():
-    get_db()
+migrate_db()  # запускаем один раз при старте приложения
 
 
-def register_player(name, cls, base_stats):
-    """
-    Регистрирует игрока.
-    base_stats: dict с base_attack, base_defense (или можно считать по классу).
-    Возвращает данные игрока или None, если ник занят.
-    """
-    try:
+# -----------------------------------------------------------------------------
+# Сессии и декораторы безопасности
+# -----------------------------------------------------------------------------
+@app.before_request
+def load_user():
+    g.user = None
+    if 'user_id' in session:
         conn = get_db()
-        cursor = conn.cursor()
-
-        # Проверяем, есть ли такой ник
-        cursor.execute("SELECT * FROM players WHERE name = ?", (name,))
-        if cursor.fetchone():
-            return None  # Ник занят
-
-        # Начальные статы
-        base_attack = base_stats.get("base_attack", 10)
-        base_defense = base_stats.get("base_defense", 5)
-        max_hp = 100
-        current_hp = max_hp
-
-        # Инвентарь и экипировка — пустые структуры
-        inventory_str = json.dumps([])
-        equipment_str = json.dumps({"weapon": None, "armor": None})
-
-        cursor.execute('''
-            INSERT INTO players (
-                name, class, level, exp, adenas,
-                attack, defense, current_hp, max_hp,
-                inventory_json, equipment_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            name, cls, 1, 0, 0,
-            base_attack, base_defense, current_hp, max_hp,
-            inventory_str, equipment_str
-        ))
-
-        conn.commit()
-
-        return {
-            "name": name,
-            "class": cls,
-            "level": 1,
-            "exp": 0,
-            "aden": 0,
-            "attack": base_attack,
-            "defense": base_defense,
-            "current_hp": current_hp,
-            "max_hp": max_hp,
-            "inventory": [],
-            "equipment": {"weapon": None, "armor": None},
-        }
-    except Exception as e:
-        print(f"DB Error: {e}")
-        return None
-
-# --- НАСТРОЙКИ БД ---
-DB_PATH = '/data/game.db'  # Amvera: persistent storage
-
-def get_db():
-    """Возвращает соединение с SQLite. Создаёт таблицу players, если её нет."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            class TEXT NOT NULL,
-            level INTEGER DEFAULT 1,
-            adenas INTEGER DEFAULT 0,
-            exp INTEGER DEFAULT 0,
-            next_level_exp INTEGER DEFAULT 100,
-            max_hp INTEGER DEFAULT 100,
-            current_hp INTEGER DEFAULT 100,
-            attack INTEGER DEFAULT 0,
-            defense INTEGER DEFAULT 0,
-            inventory_json TEXT DEFAULT '[]',
-            equipment_json TEXT DEFAULT '{"weapon": null, "armor": null}'
-        )
-    ''')
-    conn.commit()
-    return conn
-
-def init_db():
-    get_db()
-
-init_db()  # Инициализация при старте
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, is_admin FROM players WHERE id = ?", (session['user_id'],))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            g.user = {'id': row[0], 'name': row[1], 'is_admin': bool(row[2])}
 
 
-# Предметы (база по ID)
-ITEMS_DB = {
-    1: {"id": 1, "name": "Ржавый меч", "type": "weapon", "bonus_attack": 5, "bonus_defense": 0, "price": 100},
-    2: {"id": 2, "name": "Стальной клинок", "type": "weapon", "bonus_attack": 12, "bonus_defense": 0, "price": 250},
-    3: {"id": 3, "name": "Лук новичка", "type": "weapon", "bonus_attack": 8, "bonus_defense": 0, "price": 180},
-    4: {"id": 4, "name": "Деревянный щит", "type": "armor", "bonus_attack": 0, "bonus_defense": 6, "price": 150},
-    5: {"id": 5, "name": "Тяжёлый стальной щит", "type": "armor", "bonus_attack": 0, "bonus_defense": 14, "price": 320},
-    6: {"id": 6, "name": "Кожаная броня", "type": "armor", "bonus_attack": 0, "bonus_defense": 8, "price": 200},
-    7: {"id": 7, "name": "Кольчуга", "type": "armor", "bonus_attack": 0, "bonus_defense": 16, "price": 400},
-}
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not g.user:
+            return jsonify({'error': 'Требуется авторизация'}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 
-def calc_stats(hero):
-    """Считает итоговые атаку и защиту с учётом экипировки."""
-    bonus_atk = 0
-    bonus_def = 0
-
-    try:
-        equipment = json.loads(hero['equipment_json'])
-    except Exception:
-        equipment = {"weapon": None, "armor": None}
-
-    if equipment.get('weapon') and equipment['weapon'] in ITEMS_DB:
-        item = ITEMS_DB[equipment['weapon']]
-        bonus_atk += item['bonus_attack']
-        bonus_def += item['bonus_defense']
-
-    if equipment.get('armor') and equipment['armor'] in ITEMS_DB:
-        item = ITEMS_DB[equipment['armor']]
-        bonus_atk += item['bonus_attack']
-        bonus_def += item['bonus_defense']
-
-    final_attack = hero['attack'] + bonus_atk
-    final_defense = hero['defense'] + bonus_def
-    return final_attack, final_defense
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not g.user or not g.user['is_admin']:
+            return jsonify({'error': 'Нет прав администратора'}), 403
+        return f(*args, **kwargs)
+    return decorated
 
 
+# -----------------------------------------------------------------------------
+# Эндпоинты: логин, регистрация, статус
+# -----------------------------------------------------------------------------
 @app.route('/')
 def root():
     return send_from_directory('templates', 'login.html')
@@ -212,6 +111,8 @@ def root():
 
 @app.route('/game.html')
 def game_page():
+    if not g.user:
+        return send_from_directory('templates', 'login.html')
     return send_from_directory('templates', 'game.html')
 
 
@@ -219,6 +120,8 @@ def game_page():
 def login():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
+    password = (data.get('password') or '').strip()  # если у тебя есть bcrypt — используй его здесь
+
     if not name:
         return jsonify({'error': 'Имя обязательно'}), 400
 
@@ -231,10 +134,12 @@ def login():
     if not row:
         return jsonify({'error': 'Игрок не найден'}), 404
 
-    try:
-        inventory = json.loads(row['inventory_json'])
-    except Exception:
-        inventory = []
+    # Если есть bcrypt: сравнивай хеши. Сейчас просто принимаем любой пароль для теста.
+    # if not bcrypt.checkpw(password.encode(), row['password_hash']):
+    #     return jsonify({'error': 'Неверный пароль'}), 401
+
+    session['user_id'] = row['id']
+    session.permanent = True
 
     player = {
         "name": row["name"],
@@ -247,16 +152,100 @@ def login():
         "max_hp": row["max_hp"],
         "attack": row["attack"],
         "defense": row["defense"],
-        "inventory": inventory,
-        "equipment": json.loads(row["equipment_json"]) if row["equipment_json"] else {"weapon": None, "armor": None},
     }
+    try:
+        inventory = json.loads(row['inventory_json'] or '[]')
+    except:
+        inventory = []
+    try:
+        equipment = json.loads(row['equipment_json'] or '{}')
+    except:
+        equipment = {"weapon": None, "armor": None}
+
+    player['inventory'] = inventory
+    player['equipment'] = equipment
+
+    attack, defense = calc_stats(player)
+    player['attack_final'] = attack
+    player['defense_final'] = defense
+
     return jsonify(player), 200
 
 
-@app.route('/status', methods=['POST'])
-def status():
+@app.route('/create-hero', methods=['POST'])
+@login_required
+def create_hero():
+    """Создать героя можно только если у тебя ещё нет персонажа.
+       Для простоты делаем это по сессии: если у user_id уже есть герой — ошибка.
+       В твоём случае можно сделать отдельный эндпоинт /register без сессии.
+    """
     data = request.get_json() or {}
-    player_name = (data.get('player_id') or '').strip()
+    cls = (data.get('class') or data.get('cls') or '').strip().capitalize()
+    name = (data.get('name') or '').strip()
+
+    if not cls or not name:
+        return jsonify({"error": "Поля 'name' и 'class' обязательны"}), 400
+
+    stats = get_class_stats(cls)
+    if not stats:
+        allowed = list(class_stats.keys())
+        return jsonify({"error": "Недопустимый класс", "allowed": allowed}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Проверяем, есть ли уже герой у этого пользователя (по сессии)
+    cur.execute("SELECT id FROM players WHERE user_id = ?", (g.user['id'],))  # предполагаем, что ты добавишь user_id в players
+    if cur.fetchone():
+        conn.close()
+        return jsonify({"error": "У вас уже есть персонаж"}), 409
+
+    # Проверяем уникальность ника
+    cur.execute("SELECT id FROM players WHERE name = ?", (name,))
+    if cur.fetchone():
+        conn.close()
+        return jsonify({"error": "Ник уже занят"}), 409
+
+    cur.execute('''
+        INSERT INTO players (name, class, attack, defense, max_hp, current_hp, inventory_json, equipment_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        name,
+        cls,
+        stats['attack'],
+        stats['defense'],
+        100,
+        100,
+        '[]',
+        '{"weapon": null, "armor": null}'
+    ))
+    conn.commit()
+    conn.close()
+
+    player = {
+        "name": name,
+        "class": cls,
+        "level": 1,
+        "aden": 0,
+        "exp": 0,
+        "next_level_exp": 100,
+        "current_hp": 100,
+        "max_hp": 100,
+        "attack": stats['attack'],
+        "defense": stats['defense'],
+        "inventory": [],
+        "equipment": {"weapon": None, "armor": None},
+    }
+    return jsonify(player), 201
+
+
+@app.route('/status', methods=['POST'])
+@login_required
+def status():
+    # В продакшене лучше не передавать player_id, а брать из сессии/g.user
+    data = request.get_json() or {}
+    player_name = (data.get('player_id') or g.user['name']).strip()
+
     if not player_name:
         return jsonify({"error": "Имя игрока обязательно"}), 400
 
@@ -271,8 +260,10 @@ def status():
 
     try:
         inventory = json.loads(row['inventory_json'])
-    except Exception:
-        inventory = []
+    except: inventory = []
+    try:
+        equipment = json.loads(row['equipment_json'] or '{}')
+    except: equipment = {"weapon": None, "armor": None}
 
     hero = {
         "name": row["name"],
@@ -286,7 +277,7 @@ def status():
         "attack": row["attack"],
         "defense": row["defense"],
         "inventory": inventory,
-        "equipment": json.loads(row["equipment_json"]) if row["equipment_json"] else {"weapon": None, "armor": None},
+        "equipment": equipment,
     }
 
     attack, defense = calc_stats(hero)
@@ -308,147 +299,258 @@ def status():
     return jsonify(resp)
 
 
-@app.route('/create-hero', methods=['POST'])
-def create_hero():
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    
-    raw_body = request.get_data(as_text=True)
-    logging.info(f"[DEBUG] RAW BODY: {raw_body}")
-    
-    data = {}
-    try:
-        if raw_body:
-            data = json.loads(raw_body)
-    except json.JSONDecodeError as e:
-        logging.error(f"[DEBUG] JSON Parse Error: {e}")
-        return jsonify({"error": "Неверный формат JSON"}), 400
+# -----------------------------------------------------------------------------
+# Чат + Админ‑команды (в стиле Lineage: /give Player1 adena 5000)
+# -----------------------------------------------------------------------------
+@app.route('/chat/history', methods=['GET'])
+@login_required
+def chat_history():
+    limit = min(int(request.args.get('limit', 50)), 100)
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT player_name, message, type, created_at
+        FROM chat_messages
+        ORDER BY id DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
 
-    logging.info(f"[DEBUG] PARSED DATA: {data}")
+    messages = [
+        {
+            'player': r['player_name'],
+            'message': r['message'],
+            'type': r['type'],
+            'time': r['created_at']
+        }
+        for r in reversed(rows)
+    ]
+    return jsonify(messages)
 
-    name = (data.get('name') or '').strip()
-    cls = (data.get('class') or data.get('cls') or '').strip()
-    password = (data.get('password') or '').strip()
 
-    logging.info(f"[DEBUG] Name='{name}', Class='{cls}', Password len={len(password)}")
+@app.route('/chat/send', methods=['POST'])
+@login_required
+def chat_send():
+    data = request.get_json() or {}
+    message = (data.get('message') or '').strip()
+    if not message:
+        return jsonify({'error': 'Пустое сообщение'}), 400
 
-    if not name:
-        return jsonify({"error": "Поле 'name' обязательно"}), 400
-    if not cls:
-        return jsonify({
-            "error": "Поле 'class' обязательно. Доступные: Воин, Лучник, Танк, Друид"
-        }), 400
-    if not password:
-        return jsonify({"error": "Пароль обязателен"}), 400
-
-    normalized_cls = cls.capitalize() if len(cls) > 0 else cls
-    class_stats = {
-        'Воин': {'attack': 110, 'defense': 15, 'crit_chance': 0.10, 'crit_mult': 1.5},
-        'Лучник': {'attack': 95, 'defense': 8, 'crit_chance': 0.20, 'crit_mult': 2.0},
-        'Танк': {'attack': 80, 'defense': 25, 'crit_chance': 0.05, 'crit_mult': 1.3},
-        'Друид': {'attack': 70, 'defense': 12, 'crit_chance': 0.12, 'crit_mult': 1.6},
-    }
-    stats = class_stats.get(cls) or class_stats.get(normalized_cls)
-    if not stats:
-        return jsonify({
-            "error": "Недопустимый класс",
-            "allowed": list(class_stats.keys())
-        }), 400
-
+    # Rate limit (простой): не чаще 1 сообщения в 2 секунды на игрока
     conn = get_db()
     cur = conn.cursor()
+    cur.execute("""
+        SELECT created_at FROM chat_messages
+        WHERE player_name = ?
+        ORDER BY id DESC LIMIT 1
+    """, (g.user['name'],))
+    row = cur.fetchone()
+    import datetime
+    if row:
+        last_str = row[0]
+        # SQLite CURRENT_TIMESTAMP обычно в формате ISO: 2024-01-01 12:34:56
+        try:
+            last = datetime.datetime.strptime(last_str, '%Y-%m-%d %H:%M:%S')
+        except:
+            last = datetime.datetime.utcnow()
+        now = datetime.datetime.utcnow()
+        if (now - last).total_seconds() < 2:
+            conn.close()
+            return jsonify({'error': 'Слишком частое сообщение'}), 429
 
-    cur.execute("SELECT id FROM players WHERE name = ?", (name,))
-    if cur.fetchone():
-        conn.close()
-        return jsonify({"error": "Ник уже занят"}), 409
+    is_command = message.startswith('/')
+    msg_type = 'command' if is_command else 'chat'
 
-    # ✅ Теперь сохраняем inventory_json и equipment_json явно
-    cur.execute('''
-        INSERT INTO players (name, class, attack, defense, max_hp, current_hp, inventory_json, equipment_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        name,
-        normalized_cls,
-        stats['attack'],
-        stats['defense'],
-        100,
-        100,
-        '[]',
-        '{"weapon": null, "armor": null}'
-    ))
+    if is_command:
+        # Выполняем команду
+        resp = handle_command(g.user['name'], message)
+        # Если это админ‑команда — не сохраняем в общий чат, возвращаем результат
+        if resp.get('is_command_result'):
+            conn.close()
+            return jsonify(resp)
+        msg_type = 'chat'  # обычная команда (не админ) — как обычное сообщение
+
+    # Сохраняем сообщение в БД
+    cur.execute("""
+        INSERT INTO chat_messages (player_name, message, type)
+        VALUES (?, ?, ?)
+    """, (g.user['name'], message, msg_type))
     conn.commit()
     conn.close()
 
-    player = {
-        "name": name,
-        "class": normalized_cls,
-        "level": 1,
-        "aden": 0,
-        "exp": 0,
-        "next_level_exp": 100,
-        "current_hp": 100,
-        "max_hp": 100,
-        "attack": stats['attack'],
-        "defense": stats['defense'],
-        "inventory": [],
-        "equipment": {"weapon": None, "armor": None},
-    }
-    return jsonify(player), 201
+    return jsonify({'status': 'ok', 'message': message})
 
 
-@app.route('/fight', methods=['POST'])
-def fight():
-    data = request.get_json() or {}
-    player_name = (data.get('player_id') or '').strip()
-    if not player_name:
-        return jsonify({"success": False, "message": "Имя игрока обязательно"}), 400
+def handle_command(admin_name, command_text):
+    parts = command_text.split()
+    if len(parts) < 2:
+        return {'error': 'Неверная команда', 'is_command_result': True}
+
+    cmd = parts[1].lower()
+
+    # Проверка прав (на всякий случай, хотя эндпоинт защищён декоратором)
+    if not is_player_admin(admin_name):
+        return {'error': 'У вас нет прав администратора', 'is_command_result': True}
+
+    if cmd == 'give':
+        return handle_give_command(parts, admin_name)
+
+    return {'error': f'Неизвестная команда: {cmd}', 'is_command_result': True}
+
+
+def is_player_admin(name):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT is_admin FROM players WHERE name = ?", (name,))
+    row = cur.fetchone()
+    conn.close()
+    return row is not None and row[0] == 1
+
+def handle_give_command(parts, admin_name):
+    if len(parts) < 4:
+        return {
+            'error': 'Формат: /give <target> adena <amount> или /give <target> item <id>',
+            'is_command_result': True
+        }
+
+    target_name = parts[2]
+    mode = parts[3].lower()
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM players WHERE name = ?", (player_name,))
+
+    try:
+        cur.execute("SELECT id, adenas, inventory_json FROM players WHERE name = ?", (target_name,))
+        row = cur.fetchone()
+        if not row:
+            return {'error': f'Игрок {target_name} не найден', 'is_command_result': True}
+
+        target_id, current_adenas, inventory_json = row
+
+        if mode == 'adena':
+            if len(parts) < 5:
+                return {'error': 'Укажите количество аден: /give <target> adena <amount>', 'is_command_result': True}
+            try:
+                amount = int(parts[4])
+                if amount <= 0:
+                    return {'error': 'Количество аден должно быть положительным', 'is_command_result': True}
+            except ValueError:
+                return {'error': 'Некорректное число аден', 'is_command_result': True}
+
+            new_adenas = current_adenas + amount
+            cur.execute("UPDATE players SET adenas = ? WHERE id = ?", (new_adenas, target_id))
+            conn.commit()
+            return {
+                'success': True,
+                'message': f'{admin_name} выдал игроку {target_name} {amount} аден. Теперь у него {new_adenas} аден.',
+                'is_command_result': True
+            }
+
+        elif mode == 'item':
+            if len(parts) < 5:
+                return {'error': 'Укажите ID предмета: /give <target> item <id>', 'is_command_result': True}
+            try:
+                item_id = int(parts[4])
+            except ValueError:
+                return {'error': 'ID предмета должен быть числом', 'is_command_result': True}
+
+            if item_id not in ITEMS_DB:
+                return {'error': f'Предмет с ID {item_id} не существует', 'is_command_result': True}
+
+            try:
+                inventory = json.loads(inventory_json or '[]')
+            except Exception:
+                inventory = []
+
+            inventory.append(item_id)
+            inventory_str = json.dumps(inventory)
+
+            cur.execute("UPDATE players SET inventory_json = ? WHERE id = ?", (inventory_str, target_id))
+            conn.commit()
+
+            item_name = ITEMS_DB[item_id]['name']
+            return {
+                'success': True,
+                'message': f'{admin_name} выдал игроку {target_name} предмет "{item_name}" (ID: {item_id})',
+                'is_command_result': True
+            }
+        else:
+            return {'error': 'Режим должен быть "adena" или "item"', 'is_command_result': True}
+
+    except Exception as e:
+        logger.exception(f"Ошибка в /give: {e}")
+        return {'error': 'Внутренняя ошибка при выдаче', 'is_command_result': True}
+    finally:
+        conn.close()
+@app.route('/fight', methods=['POST'])
+@login_required
+def fight():
+    data = request.get_json() or {}
+    player_name = (data.get('player_id') or g.user['name']).strip()
+
+    if not player_name:
+        return jsonify({'success': False, 'message': 'Имя игрока обязательно'}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем игрока
+    cur.execute("""
+        SELECT id, name, class, level, exp, next_level_exp,
+               adenas, attack, defense, max_hp, current_hp,
+               inventory_json, equipment_json
+        FROM players
+        WHERE name = ?
+    """, (player_name,))
     row = cur.fetchone()
 
     if not row:
         conn.close()
-        return jsonify({'success': False, 'message': 'Игрок не найден.'}), 404
+        return jsonify({'success': False, 'message': 'Игрок не найден'}), 404
 
+    # Превращаем строку в объекты
     try:
-        inventory = json.loads(row['inventory_json'])
-    except Exception:
+        inventory = json.loads(row['inventory_json'] or '[]')
+    except:
         inventory = []
     try:
-        equipment = json.loads(row['equipment_json'])
-    except Exception:
+        equipment = json.loads(row['equipment_json'] or '{}')
+    except:
         equipment = {"weapon": None, "armor": None}
 
-    h = {
+    hero = {
+        "id": row["id"],
         "name": row["name"],
         "class": row["class"],
         "level": row["level"],
-        "aden": row["adenas"],
         "exp": row["exp"],
         "next_level_exp": row["next_level_exp"],
-        "current_hp": row["current_hp"],
+        "aden": row["adenas"],
+        "attack_base": row["attack"],
+        "defense_base": row["defense"],
         "max_hp": row["max_hp"],
-        "attack": row["attack"],
-        "defense": row["defense"],
+        "current_hp": row["current_hp"],
         "inventory": inventory,
         "equipment": equipment,
     }
 
-    if h['current_hp'] <= 0:
-        h['current_hp'] = max(0, h['max_hp'] // 2)
-        cur.execute("UPDATE players SET current_hp = ? WHERE name = ?", (h['current_hp'], h['name']))
+    # Если мёртв — воскрешаем с половиной HP и не даём начать бой сразу
+    if hero['current_hp'] <= 0:
+        new_hp = max(1, hero['max_hp'] // 2)
+        cur.execute("UPDATE players SET current_hp = ? WHERE id = ?", (new_hp, hero['id']))
         conn.commit()
         conn.close()
         return jsonify({
             'success': False,
-            'message': 'Ты был мёртв, но воскрес с половиной здоровья. Попробуй снова.'
-        })
+            'message': f'Ты был мёртв. Ты воскрес с {new_hp} HP. Попробуй снова.'
+        }), 200
 
-    attack, defense = calc_stats(h)
+    # Считаем финальные статы
+    attack, defense = calc_stats(hero)
 
+    # Параметры моба (в будущем можно брать по локации)
     mob_hp = random.randint(80, 120)
     mob_attack = random.randint(12, 22)
     mob_defense = random.randint(4, 8)
@@ -457,9 +559,11 @@ def fight():
     log.append(f'⚔️ Ты выходишь на бой против монстра (HP: {mob_hp}, ATK: {mob_attack}, DEF: {mob_defense})')
 
     round_num = 1
-    while mob_hp > 0 and h['current_hp'] > 0:
+    max_rounds = 30
+    while mob_hp > 0 and hero['current_hp'] > 0 and round_num <= max_rounds:
         log.append(f'\n--- Раунд {round_num} ---')
 
+        # Ход игрока
         dmg_to_mob = max(1, int((attack - mob_defense) * random.uniform(0.8, 1.2)))
         mob_hp -= dmg_to_mob
         log.append(f'Ты наносишь {dmg_to_mob} урона. У монстра осталось {max(0, mob_hp)} HP.')
@@ -467,35 +571,43 @@ def fight():
         if mob_hp <= 0:
             break
 
+        # Ход моба
         dmg_to_player = max(1, int((mob_attack - defense) * random.uniform(0.8, 1.2)))
-        h['current_hp'] -= dmg_to_player
-        log.append(f'Монстр бьёт тебя на {dmg_to_player} урона. У тебя осталось {max(0, h["current_hp"])} HP.')
+        hero['current_hp'] -= dmg_to_player
+        log.append(f'Монстр бьёт тебя на {dmg_to_player} урона. У тебя осталось {max(0, hero["current_hp"])} HP.')
 
         round_num += 1
+
+    won = mob_hp <= 0 and hero['current_hp'] > 0
 
     reward_aden = random.randint(50, 150)
     loot_chance = random.random()
     loot_item_id = None
     if loot_chance > 0.6:
         loot_item_id = random.choice(list(ITEMS_DB.keys()))
-        h['inventory'].append(loot_item_id)
+        hero['inventory'].append(loot_item_id)
         log.append(f'🎒 С монстра выпал предмет с ID {loot_item_id}! Добавлен в инвентарь.')
 
-    h['aden'] += reward_aden
+    hero['aden'] += reward_aden
     log.append(f'💰 Ты получил {reward_aden} Аденов.')
 
     exp_gain = random.randint(30, 70)
-    h['exp'] += exp_gain
+    hero['exp'] += exp_gain
     log.append(f'✨ Ты получил {exp_gain} EXP.')
 
     level_up = False
-    while h['exp'] >= h['next_level_exp']:
-        h['level'] += 1
-        h['exp'] -= h['next_level_exp']
-        h['next_level_exp'] = int(h['next_level_exp'] * 1.4)
-        h['max_hp'] += 20
-        h['current_hp'] = h['max_hp']
+    while hero['exp'] >= hero['next_level_exp']:
+        hero['level'] += 1
+        hero['exp'] -= hero['next_level_exp']
+        hero['next_level_exp'] = int(hero['next_level_exp'] * 1.4)
+        hero['max_hp'] += 20
+        hero['current_hp'] = min(hero['current_hp'], hero['max_hp'])
         level_up = True
+        log.append(f'🎉 Уровень повышен! Теперь ты {hero["level"]} уровня!')
+
+    # Сохраняем всё обратно в БД
+    inventory_str = json.dumps(hero['inventory'])
+    equipment_str = json.dumps(hero['equipment'])
 
     cur.execute('''
         UPDATE players
@@ -504,267 +616,79 @@ def fight():
             next_level_exp = ?,
             adenas = ?,
             max_hp = ?,
-            current_hp = ?
-        WHERE name = ?
+            current_hp = ?,
+            inventory_json = ?,
+            equipment_json = ?
+        WHERE id = ?
     ''', (
-        h['level'],
-        h['exp'],
-        h['next_level_exp'],
-        h['aden'],
-        h['max_hp'],
-        h['current_hp'],
-        h['name']
+        hero['level'],
+        hero['exp'],
+        hero['next_level_exp'],
+        hero['aden'],
+        hero['max_hp'],
+        hero['current_hp'],
+        inventory_str,
+        equipment_str,
+        hero['id']
     ))
-    conn.commit()
-
-    message = '\n'.join(log)
-    if h['current_hp'] <= 0:
-        message += '\n💀 Ты погиб в бою… Но будешь воскрешён при следующем запросе статуса.'
-
-    return jsonify({
-        'success': True,
-        'message': message,
-        'player_id': player_name,
-    })
-
-@app.route('/api/augment', methods=['POST'])
-def api_augment():
-    data = request.get_json(silent=True) or {}
-    player_id = (data.get('player_id') or '').strip()
-    location = data.get('location')
-    index = data.get('index')
-    slot = data.get('slot')
-
-    if not player_id or not location:
-        return jsonify({"error": "Недостаточно данных"}), 400
-
-    from augment import load_player, perform_augment
-
-    hero = load_player(player_id)
-    if not hero:
-        return jsonify({"error": "Игрок не найден"}), 404
-
-    key = index if location == 'inventory' else slot
-    success, message, partial = perform_augment(hero, location, key)
-
-    response_data = {
-        "success": success,
-        "message": message,
-        **partial,
-    }
-    return jsonify(response_data), 200
-
-@app.route('/api/battle', methods=['POST'])
-def api_battle():
-    data = request.get_json(silent=True) or {}
-    player_id = (data.get('player_id') or '').strip()
-    mob_id = data.get('mob_id')
-
-    if not player_id or not mob_id:
-        return jsonify({"error": "Недостаточно данных"}), 400
-
-    from augment import load_player, save_player
-    from battle import run_battle
-
-    hero = load_player(player_id)
-    if not hero:
-        return jsonify({"error": "Игрок не найден"}), 404
-
-    result = run_battle(hero, mob_id)
-
-    # Сохраняем изменения (EXP, уровень, HP, инвентарь, статы)
-    save_player(hero)
-
-    response_data = {
-        "success": result["success"],
-        "won": result["won"],
-        "rounds": result["rounds"],
-        "player": result["player_updated"],
-        "message": result.get("message", ""),
-    }
-    return jsonify(response_data), 200
-
-@app.route('/api/move', methods=['POST'])
-def api_move():
-    data = request.get_json(silent=True) or {}
-    player_id = (data.get('player_id') or '').strip()
-    loc_id = data.get('loc_id')
-
-    if not player_id or loc_id is None:
-        return jsonify({"error": "Недостаточно данных"}), 400
-
-    from augment import load_player, save_player
-    import cities
-
-    hero = load_player(player_id)
-    if not hero:
-        return jsonify({"error": "Игрок не найден"}), 404
-
-    # Проверка доступности локации
-    if not cities.is_location_accessible(hero["level"], loc_id):
-        return jsonify({
-            "success": False,
-            "message": "❌ Эта локация слишком сложна для вашего уровня. Повысьте уровень или выберите другую."
-        }), 403
-
-    # Сохраняем текущую локацию у игрока (добавь колонку current_loc_id в players)
-    hero["current_loc_id"] = loc_id
-    save_player(hero)
-
-    loc_info = cities.get_location_info(loc_id)
-    city_info = next((c for c in cities.CITIES if c["id"] == loc_info["city_id"]), None)
-
-    return jsonify({
-        "success": True,
-        "message": f"✅ Вы переместились в локацию: {loc_info['name']}",
-        "location": loc_info,
-        "city": city_info,
-        "player": {
-            "current_loc_id": loc_id,
-            "level": hero["level"],
-        },
-    }), 200
-
-@app.route('/api/start_battle', methods=['POST'])
-def api_start_battle():
-    data = request.get_json(silent=True) or {}
-    player_id = (data.get('player_id') or '').strip()
-
-    if not player_id:
-        return jsonify({"error": "Недостаточно данных"}), 400
-
-    from augment import load_player, save_player
-    from battle import run_battle
-    import cities
-    from mobs import MOBS
-
-    hero = load_player(player_id)
-    if not hero:
-        return jsonify({"error": "Игрок не найден"}), 404
-
-    loc_id = hero.get("current_loc_id")
-    if not loc_id:
-        return jsonify({"error": "Сначала переместитесь в локацию через /api/move"}), 400
-
-    mob_id = cities.get_mob_id_for_location(loc_id, hero["level"])
-    if not mob_id:
-        return jsonify({"error": "В этой локации нет подходящих мобов"}), 500
-
-    result = run_battle(hero, mob_id)
-    save_player(hero)
-
-    return jsonify({
-        "success": result["success"],
-        "won": result["won"],
-        "rounds": result["rounds"],
-        "mob": MOBS.get(mob_id),
-        "player": result["player_updated"],
-    }), 200
-
-
-@app.route('/equip', methods=['POST'])
-def equip():
-    data = request.get_json() or {}
-    player_name = (data.get('player_id') or '').strip()
-    item_id = data.get('item_id')
-    slot = data.get('slot')
-
-    if not player_name or not item_id or not slot:
-        return jsonify({'success': False, 'message': 'Не хватает параметров: player_id, item_id, slot'}), 400
-
-    if slot not in ('weapon', 'armor'):
-        return jsonify({'success': False, 'message': 'Неверный слот экипировки. Допустимо: weapon, armor'}), 400
-
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("SELECT * FROM players WHERE name = ?", (player_name,))
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return jsonify({'success': False, 'message': 'Игрок не найден.'}), 404
-
-    try:
-        inventory = json.loads(row['inventory_json'])
-    except Exception:
-        inventory = []
-
-    try:
-        equipment = json.loads(row['equipment_json'])
-    except Exception:
-        equipment = {"weapon": None, "armor": None}
-
-    # Проверка: предмет есть в инвентаре?
-    if item_id not in inventory:
-        conn.close()
-        return jsonify({
-            'success': False,
-            'message': f'Предмета с ID {item_id} нет в инвентаре. Сначала получи его в бою.'
-        }), 400
-
-    # Проверка: предмет существует в базе предметов
-    if item_id not in ITEMS_DB:
-        conn.close()
-        return jsonify({'success': False, 'message': 'Предмет с таким ID не существует.'}), 400
-
-    # Экипировка: убираем из инвентаря, ставим в слот
-    inventory.remove(item_id)
-    equipment[slot] = item_id
-
-    # Сохраняем обратно в БД
-    cur.execute('''
-        UPDATE players
-        SET inventory_json = ?, equipment_json = ?
-        WHERE name = ?
-    ''', (json.dumps(inventory), json.dumps(equipment), player_name))
     conn.commit()
     conn.close()
 
-    item_name = ITEMS_DB[item_id]['name']
+    result_message = 'Победа!' if won else 'Ты проиграл.'
+    if hero['current_hp'] <= 0:
+        result_message = 'Ты погиб в бою…'
+
     return jsonify({
-        'success': True,
-        'message': f'{item_name} успешно надет в слот "{slot}".',
+        'success': won,
+        'message': result_message,
+        'log': log,
+        'player': {
+            'name': hero['name'],
+            'level': hero['level'],
+            'exp': hero['exp'],
+            'next_level_exp': hero['next_level_exp'],
+            'aden': hero['aden'],
+            'current_hp': hero['current_hp'],
+            'max_hp': hero['max_hp'],
+            'attack': attack,
+            'defense': defense,
+            'inventory': hero['inventory'],
+            'equipment': hero['equipment'],
+        },
+        'mob': {
+            'hp_left': max(0, mob_hp),
+            'initial_hp': mob_hp + sum(int(l.split()[3]) for l in log if 'наносишь' in l),  # грубая эвристика для примера
+        },
     })
-
-
 @app.route('/admin/players', methods=['GET'])
+@admin_required
 def admin_players():
     conn = get_db()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, name, class, level, adenas, exp, next_level_exp,
-               max_hp, current_hp, attack, defense
+        SELECT id, name, class, level, adenas, is_admin, created_at
         FROM players
+        ORDER BY id
     """)
     rows = cur.fetchall()
     conn.close()
 
-    players = []
-    for r in rows:
-        players.append({
-            "id": r["id"],
-            "name": r["name"],
-            "class": r["class"],
-            "level": r["level"],
-            "aden": r["adenas"],
-            "exp": r["exp"],
-            "next_level_exp": r["next_level_exp"],
-            "max_hp": r["max_hp"],
-            "current_hp": r["current_hp"],
-            "attack": r["attack"],
-            "defense": r["defense"],
-        })
-    return jsonify(players)
-@app.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    return response
+    players = [
+        {
+            'id': r['id'],
+            'name': r['name'],
+            'class': r['class'],
+            'level': r['level'],
+            'adenas': r['adenas'],
+            'is_admin': bool(r['is_admin']),
+            'created_at': r['created_at'],
+        }
+        for r in rows
+    ]
 
-
-# ВАЖНО: этот дублирующийся /status удалён — он перекрывал настоящий статус игрока.
-# Теперь работает только POST /status, который возвращает полные данные героя.
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    return jsonify({
+        'success': True,
+        'admin': g.user['name'],
+        'players': players,
+    })
