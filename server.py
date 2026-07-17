@@ -330,58 +330,37 @@ def chat_history():
     return jsonify(messages)
 
 
-@app.route('/chat/send', methods=['POST'])
-@login_required
-def chat_send():
+@app.route('/api/chat/send', methods=['POST'])
+def api_chat_send():
     data = request.get_json() or {}
+    player_id = data.get('player_id')
     message = (data.get('message') or '').strip()
+
+    # Простая валидация
+    if not player_id:
+        return jsonify({'error': 'player_id обязателен'}), 400
     if not message:
         return jsonify({'error': 'Пустое сообщение'}), 400
 
-    # Rate limit (простой): не чаще 1 сообщения в 2 секунды на игрока
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT created_at FROM chat_messages
-        WHERE player_name = ?
-        ORDER BY id DESC LIMIT 1
-    """, (g.user['name'],))
-    row = cur.fetchone()
-    import datetime
-    if row:
-        last_str = row[0]
-        # SQLite CURRENT_TIMESTAMP обычно в формате ISO: 2024-01-01 12:34:56
-        try:
-            last = datetime.datetime.strptime(last_str, '%Y-%m-%d %H:%M:%S')
-        except:
-            last = datetime.datetime.utcnow()
-        now = datetime.datetime.utcnow()
-        if (now - last).total_seconds() < 2:
-            conn.close()
-            return jsonify({'error': 'Слишком частое сообщение'}), 429
+    sender_name = f"Игрок #{player_id}"
 
-    is_command = message.startswith('/')
-    msg_type = 'command' if is_command else 'chat'
+    # Добавляем сообщение
+    CHAT_MESSAGES.append({
+        'sender': sender_name,
+        'text': message,
+        'ts': time.time()
+    })
 
-    if is_command:
-        # Выполняем команду
-        resp = handle_command(g.user['name'], message)
-        # Если это админ‑команда — не сохраняем в общий чат, возвращаем результат
-        if resp.get('is_command_result'):
-            conn.close()
-            return jsonify(resp)
-        msg_type = 'chat'  # обычная команда (не админ) — как обычное сообщение
+    # Храним только последние N сообщений
+    if len(CHAT_MESSAGES) > MAX_CHAT_HISTORY:
+        CHAT_MESSAGES[:] = CHAT_MESSAGES[-MAX_CHAT_HISTORY:]
 
-    # Сохраняем сообщение в БД
-    cur.execute("""
-        INSERT INTO chat_messages (player_name, message, type)
-        VALUES (?, ?, ?)
-    """, (g.user['name'], message, msg_type))
-    conn.commit()
-    conn.close()
+    return jsonify({'status': 'ok'})
 
-    return jsonify({'status': 'ok', 'message': message})
-
+@app.route('/api/chat/messages')
+def api_chat_messages():
+    # Возвращаем последние 50 сообщений
+    return jsonify({'messages': CHAT_MESSAGES[-50:]})
 
 def handle_command(admin_name, command_text):
     parts = command_text.split()
