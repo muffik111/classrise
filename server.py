@@ -22,8 +22,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CHAT_MESSAGES = []          # список сообщений в памяти
-MAX_CHAT_HISTORY = 100      # сколько хранить
 # На Amvera обязательно задай переменную окружения SECRET_KEY
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
@@ -331,6 +329,8 @@ def chat_history():
     ]
     return jsonify(messages)
 
+CHAT_MESSAGES = []          # глобальный список сообщений (в памяти)
+MAX_CHAT_HISTORY = 100      # сколько хранить сообщений
 
 @app.route('/api/chat/send', methods=['POST'])
 def api_chat_send():
