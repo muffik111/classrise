@@ -127,24 +127,23 @@ def game_page():
 def login():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
-    # password пока игнорируем для теста
 
     if not name:
         return jsonify({'error': 'Имя обязательно'}), 400
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM players WHERE name = ?", (name,))
+    # Важно: выбираем все нужные поля
+    cur.execute("SELECT id, name, class, level, adenas, exp, next_level_exp, current_hp, max_hp, attack, defense, inventory_json, equipment_json FROM players WHERE name = ?", (name,))
     row = cur.fetchone()
     conn.close()
 
     if not row:
         return jsonify({'error': 'Игрок не найден'}), 404
 
-    session['user_id'] = row['id']
-    session.permanent = True
-
+    # Преобразуем row в dict (если твой get_db возвращает Row с доступом по ключу — ок; если кортеж — см. примечание ниже)
     player = {
+        "id": row["id"],                # <--- ГЛАВНОЕ: добавляем id
         "name": row["name"],
         "class": row["class"],
         "level": row["level"],
@@ -156,6 +155,7 @@ def login():
         "attack": row["attack"],
         "defense": row["defense"],
     }
+
     try:
         inventory = json.loads(row['inventory_json'] or '[]')
     except:
@@ -225,14 +225,25 @@ def create_hero():
 @login_required
 def status():
     data = request.get_json() or {}
-    player_name = (data.get('player_id') or g.user.get('name')).strip()
+    player_id = data.get('player_id')  # <--- берём player_id как число
 
-    if not player_name:
-        return jsonify({"error": "Имя игрока обязательно"}), 400
+    if not player_id:
+        # Если player_id не передан, можно использовать текущего из сессии (но лучше требовать явно)
+        if g.user:
+            player_id = g.user['id']
+        else:
+            return jsonify({"error": "player_id обязателен"}), 400
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM players WHERE name = ?", (player_name,))
+    # ИЩЕМ ПО ID, а не по имени
+    cur.execute('''
+        SELECT id, name, class, level, adenas, exp, next_level_exp,
+               current_hp, max_hp, attack, defense,
+               inventory_json, equipment_json
+        FROM players
+        WHERE id = ?
+    ''', (player_id,))
     row = cur.fetchone()
     conn.close()
 
@@ -247,6 +258,7 @@ def status():
     except: equipment = {"weapon": None, "armor": None}
 
     hero = {
+        "id": row["id"],
         "name": row["name"], "class": row["class"], "level": row["level"],
         "aden": row["adenas"], "exp": row["exp"], "next_level_exp": row["next_level_exp"],
         "current_hp": row["current_hp"], "max_hp": row["max_hp"],
@@ -257,6 +269,7 @@ def status():
     attack, defense = calc_stats(hero)
 
     resp = {
+        'id': hero['id'],
         'name': hero['name'], 'class': hero['class'], 'level': hero['level'],
         'exp': hero['exp'], 'next_level_exp': hero['next_level_exp'],
         'aden': hero['aden'], 'current_hp': hero['current_hp'], 'max_hp': hero['max_hp'],
@@ -373,11 +386,12 @@ def api_chat_send():
 
     conn = get_db()
     cur = conn.cursor()
+
     cur.execute("SELECT name, is_admin FROM players WHERE id = ?", (player_id,))
     row = cur.fetchone()
-    conn.close()
 
     if not row:
+        conn.close()
         return jsonify({'error': 'Игрок не найден'}), 404
 
     sender_name = row['name']
@@ -392,42 +406,36 @@ def api_chat_send():
         if result.get('is_command_result'):
             response_message = result.get('success') and result.get('message') or result.get('error')
 
-            conn = get_db()
-        cur = conn.cursor()
-
-        if type_ == 'command':
-            # Для команд не сохраняем в чат, просто возвращаем результат
-            conn.close()
+            conn.close()  # Закрываем соединение ДО возврата
             return jsonify({
                 'success': True,
                 'message': response_message,
                 'is_command': True
             })
 
-        # Обычное сообщение в чат
-        try:
-            cur.execute('''
-                INSERT INTO chat_messages (player_name, message, type)
-                VALUES (?, ?, ?)
-            ''', (sender_name, message, 'chat'))
-            conn.commit()
+    # Обычное сообщение в чат (соединение ещё открыто)
+    try:
+        cur.execute('''
+            INSERT INTO chat_messages (player_name, message, type)
+            VALUES (?, ?, ?)
+        ''', (sender_name, message, 'chat'))
+        conn.commit()
 
-            resp = {
-                'id': cur.lastrowid,
-                'player_name': sender_name,
-                'message': message,
-                'type': 'chat',
-                'timestamp': None  # можно добавить CURRENT_TIMESTAMP в БД и брать оттуда
-            }
-            return jsonify(resp)
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении сообщения в чат: {e}", exc_info=True)
-            return jsonify({'error': 'Не удалось сохранить сообщение'}), 500
-        finally:
-            try:
-                conn.close()
-            except:
-                pass
+        resp = {
+            'id': cur.lastrowid,
+            'player_name': sender_name,
+            'message': message,
+            'type': 'chat',
+        }
+        return jsonify(resp)
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении сообщения в чат: {e}", exc_info=True)
+        return jsonify({'error': 'Не удалось сохранить сообщение'}), 500
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
 
 
 @app.route('/api/chat/history', methods=['GET'])

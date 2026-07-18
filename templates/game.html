@@ -39,11 +39,12 @@
   </style>
 </head>
 <body>
-  <!-- Если сюда зашли без авторизации, кидаем на логин -->
+  <!-- Проверка авторизации: если нет сессии, кидаем на логин -->
   <script>
-    if (!localStorage.getItem('player_id')) {
-      window.location.href = '/login.html';
-    }
+    // Мы больше НЕ берем player_id из localStorage здесь.
+    // Авторизация должна происходить через login.html, который сохраняет session cookie.
+    // Если ты хочешь проверять наличие сессии через JS, лучше делать это через запрос к /status или /login.
+    // Но самый простой способ для Flask-сессий — просто попробовать загрузить статус.
   </script>
 
   <h1>RPG в стиле Lineage 2</h1>
@@ -106,9 +107,11 @@
 
   <script>
     const API_URL = '';
-    let currentPlayerId = localStorage.getItem('player_id');
+    
+    // ВАЖНО: currentPlayer хранит весь объект игрока, полученный от сервера.
+    // Здесь НЕТ player_id из localStorage. Он появится только после успешного логина.
+    let currentPlayer = null; 
 
-    // --- Глобальные элементы (один раз) ---
     const chatMessagesBox = document.getElementById('chat-messages');
     const chatInput = document.getElementById('chat-input');
     const chatSendBtn = document.getElementById('chat-send');
@@ -136,7 +139,6 @@
       chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
     }
 
-    // --- Слушатели (вешаем ровно один раз) ---
     chatSendBtn.addEventListener('click', sendChat);
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') sendChat();
@@ -144,20 +146,25 @@
 
     async function sendChat() {
       const text = chatInput.value.trim();
-      if (!text || !currentPlayerId) return;
+      
+      // ГЛАВНОЕ ИСПРАВЛЕНИЕ: проверяем наличие currentPlayer и берем ID оттуда
+      if (!text) return;
+      if (!currentPlayer || typeof currentPlayer.id !== 'number') {
+        addChatMessage('СИСТЕМА', 'Нет данных игрока. Перезайдите в игру.', true);
+        return;
+      }
 
-      // Блокируем повторную отправку
       chatSendBtn.disabled = true;
       chatInput.disabled = true;
 
-      console.log('>>> sendChat вызван:', Date.now(), 'текст:', text);
+      console.log('>>> Отправка чата. Player ID:', currentPlayer.id, 'Текст:', text);
 
       try {
         const res = await fetch(API_URL + '/api/chat/send', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
-            player_id: currentPlayerId,
+            player_id: currentPlayer.id, // Отправляем ЧИСЛО, а не строку!
             message: text
           })
         });
@@ -168,48 +175,54 @@
         }
 
         chatInput.value = '';
-        await loadChatMessages(); // подгружаем свежие сообщения после отправки
+        await loadChatMessages();
       } catch (e) {
         console.error('Ошибка отправки чата:', e);
         addChatMessage('СИСТЕМА', e.message || 'Не удалось отправить сообщение', true);
       } finally {
-        // Разблокируем
         chatSendBtn.disabled = false;
         chatInput.disabled = false;
       }
     }
 
+    // ИСПРАВЛЕНО: эндпоинт history вместо messages (чтобы совпадал с server.py)
     async function loadChatMessages() {
       try {
-        const res = await fetch(`${API_URL}/api/chat/messages`);
+        // limit=20 - грузим последние 20 сообщений
+        const res = await fetch(`${API_URL}/api/chat/history?limit=20`);
         if (!res.ok) throw new Error('Не удалось загрузить чат');
+        
         const data = await res.json();
-
-        // Очищаем и перерисовываем
         chatMessagesBox.innerHTML = '';
 
-        if (data.messages) {
-          data.messages.forEach(msg => {
-            addChatMessage(msg.sender, msg.text, msg.is_system || false);
+        if (Array.isArray(data)) {
+          data.forEach(msg => {
+            // Ожидаем формат, который отдает server.py: {id, player_name, message, type, created_at}
+            const sender = msg.player_name || 'Unknown';
+            const text = msg.message || '';
+            const isSystem = msg.type === 'system'; // если у тебя есть системные сообщения
+            addChatMessage(sender, text, isSystem);
           });
+        } else {
+            console.warn("Неожиданный формат истории чата:", data);
         }
       } catch (e) {
         console.error('Ошибка загрузки сообщений:', e);
       }
     }
 
-    // Статус
     async function getStatus() {
       const statusBox = document.getElementById('statusBox');
       const log = document.getElementById('globalLog');
 
-      if (!currentPlayerId) {
+      if (!currentPlayer) {
         statusBox.innerHTML = '<span class="error">Сначала войдите в игру!</span>';
         return;
       }
 
       try {
-        const r = await apiPost('/status', {player_id: currentPlayerId});
+        // Эндпоинт /status ожидает player_id
+        const r = await apiPost('/status', {player_id: currentPlayer.id});
 
         if (r.error) {
           statusBox.innerHTML = '<span class="error">' + r.error + '</span>';
@@ -219,7 +232,7 @@
         let html = `
           <p><b>Имя:</b> ${r.name} | <b>Класс:</b> ${r.class} | <b>Ур:</b> ${r.level}</p>
           <p><b>EXP:</b> ${r.exp}/${r.next_level_exp} | <b>Адены:</b> ${r.aden}</p>
-          <p><b>HP:</b> ${r.current_hp}/${r.max_hp} | <b>ATK:</b> ${r.attack} | <b>DEF:</b> ${r.defense}</p>
+          <p><b>HP:</b> ${r.current_hp}/${r.max_hp} | <b>ATK:</b> ${r.attack_final || r.attack} | <b>DEF:</b> ${r.defense_final || r.defense}</p>
           <p><b>Экипировка:</b> Оружие=${r.equipment.weapon}, Броня=${r.equipment.armor}</p>
           <p><b>Инвентарь:</b> [${r.inventory.join(', ') || 'пусто'}]</p>
         `;
@@ -230,22 +243,20 @@
       }
     }
 
-    // Бой
     async function fight() {
       const log = document.getElementById('fightLog');
-      if (!currentPlayerId) {
+      if (!currentPlayer) {
         log.textContent = 'Сначала войдите в игру!';
         return;
       }
       try {
-        const r = await apiPost('/fight', {player_id: currentPlayerId});
+        const r = await apiPost('/fight', {player_id: currentPlayer.id});
         log.textContent = r.message || JSON.stringify(r, null, 2);
       } catch (e) {
         log.textContent = 'Ошибка боя: ' + e.message;
       }
     }
 
-    // Магазин
     function loadShop() {
       const items = {
         1: {"name": "Ржавый меч", "type": "weapon", "bonus_attack": 5, "bonus_defense": 0, "price": 100},
@@ -272,9 +283,8 @@
       });
     }
 
-    // Надевание предмета
     async function equipItem(slot) {
-      if (!currentPlayerId) {
+      if (!currentPlayer) {
         document.getElementById('equipLog').textContent = 'Сначала войдите в игру!';
         return;
       }
@@ -288,7 +298,7 @@
       }
 
       try {
-        const r = await apiPost('/equip', {player_id: currentPlayerId, item_id: itemId, slot: slot});
+        const r = await apiPost('/equip', {player_id: currentPlayer.id, item_id: itemId, slot: slot});
         log.textContent = r.success ? r.message : ('Ошибка: ' + (r.message || JSON.stringify(r)));
         setTimeout(getStatus, 500);
       } catch (e) {
@@ -296,16 +306,22 @@
       }
     }
 
-    // Инициализация: загружаем чат при старте
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => {
-        loadShop();
+    /**
+     * ЭТА ФУНКЦИЯ КРИТИЧЕСКИ ВАЖНА.
+     * Её нужно вызвать из login.html (или там, где происходит вход),
+     * передав туда JSON-объект, который вернул сервер при логине.
+     */
+    window.initGame = function(playerData) {
+        currentPlayer = playerData;
+        console.log("Инициализация игры для игрока:", currentPlayer);
+        
+        // Сразу показываем статус и грузим чат
+        getStatus();
         loadChatMessages();
-      });
-    } else {
-      loadShop();
-      loadChatMessages();
-    }
-  </script>
-</body>
-</html>
+    };
+
+    // Инициализация: загружаем магазин сразу
+    loadShop();
+
+    // Проверка: если ты открыл game.html напрямую, а не через логин,
+    // currentPlayer будет null. Лучше всего, чтобы login.html делал редирект
