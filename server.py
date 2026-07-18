@@ -1,19 +1,17 @@
 import os
 import json
-import random
 import logging
-from datetime import datetime
 from functools import wraps
-import time
+
 import sqlite3
 from flask import Flask, request, send_from_directory, jsonify, session, g
 
 # Импорты твоего проекта
 from db import get_db
 from items import ITEMS_DB, calc_stats
-from classes import get_class_stats
+from classes import get_class_stats, class_stats  # важно: должен быть class_stats
 
-DATA_DIR = '/data'
+DATA_DIR = '.'  # на Amvera лучше не использовать /data без проверки прав
 DB_FILE = os.path.join(DATA_DIR, 'game.db')
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -21,53 +19,63 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-# На Amvera обязательно задай переменную окружения SECRET_KEY
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
 
 # -----------------------------------------------------------------------------
-# Миграции БД (чат + нормализация игроков)
+# Миграции БД (безопасно, не роняют сервер)
 # -----------------------------------------------------------------------------
 def migrate_db():
     logger.info("Запуск миграций БД...")
-    conn = get_db()
-    cur = conn.cursor()
-
-    # Добавляем колонку is_admin, если нет
     try:
-        cur.execute("PRAGMA table_info(players)")
-        cols = [c[1] for c in cur.fetchall()]
-        if 'is_admin' not in cols:
-            cur.execute("ALTER TABLE players ADD COLUMN is_admin INTEGER DEFAULT 0")
-            logger.info("Миграция: добавлена колонка is_admin в players")
-    except Exception as e:
-        logger.error(f"Ошибка миграции is_admin: {e}")
+        conn = get_db()
+        cur = conn.cursor()
 
-    # Создаём таблицу чата, если нет
-    try:
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                player_name TEXT NOT NULL,
-                message TEXT NOT NULL,
-                type TEXT NOT NULL DEFAULT 'chat',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        logger.info("Миграция: таблица chat_messages готова")
-    except Exception as e:
-        logger.error(f"Ошибка создания chat_messages: {e}")
+        # Добавляем is_admin, если нет
+        try:
+            cur.execute("PRAGMA table_info(players)")
+            cols = [c[1] for c in cur.fetchall()]
+            if 'is_admin' not in cols:
+                cur.execute("ALTER TABLE players ADD COLUMN is_admin INTEGER DEFAULT 0")
+                logger.info("Миграция: добавлена колонка is_admin в players")
+        except Exception as e:
+            logger.error(f"Ошибка миграции is_admin: {e}")
 
-    conn.commit()
-    conn.close()
+        # Создаём chat_messages, если нет
+        try:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    player_name TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'chat',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            logger.info("Миграция: таблица chat_messages готова")
+        except Exception as e:
+            logger.error(f"Ошибка создания chat_messages: {e}")
+
+        conn.commit()
+    except Exception as e:
+        logger.critical(f"Критическая ошибка при миграции БД: {e}", exc_info=True)
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
     logger.info("Миграции завершены.")
 
 
-migrate_db()  # запускаем один раз при старте приложения
+# Запускаем миграции при старте, но не даём им уронить воркер
+try:
+    migrate_db()
+except Exception as e:
+    logger.critical(f"migrate_db упал с необработанной ошибкой: {e}", exc_info=True)
 
 
 # -----------------------------------------------------------------------------
-# Сессии и декораторы безопасности
+# Сессии и декораторы
 # -----------------------------------------------------------------------------
 @app.before_request
 def load_user():
@@ -119,7 +127,7 @@ def game_page():
 def login():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
-    password = (data.get('password') or '').strip()
+    # password пока игнорируем для теста
 
     if not name:
         return jsonify({'error': 'Имя обязательно'}), 400
@@ -199,31 +207,16 @@ def create_hero():
         INSERT INTO players (name, class, attack, defense, max_hp, current_hp, inventory_json, equipment_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
-        name,
-        cls,
-        stats['attack'],
-        stats['defense'],
-        100,
-        100,
-        '[]',
-        '{"weapon": null, "armor": null}'
+        name, cls, stats['attack'], stats['defense'], 100, 100, '[]', '{"weapon": null, "armor": null}'
     ))
     conn.commit()
     conn.close()
 
     player = {
-        "name": name,
-        "class": cls,
-        "level": 1,
-        "aden": 0,
-        "exp": 0,
-        "next_level_exp": 100,
-        "current_hp": 100,
-        "max_hp": 100,
-        "attack": stats['attack'],
-        "defense": stats['defense'],
-        "inventory": [],
-        "equipment": {"weapon": None, "armor": None},
+        "name": name, "class": cls, "level": 1, "aden": 0, "exp": 0,
+        "next_level_exp": 100, "current_hp": 100, "max_hp": 100,
+        "attack": stats['attack'], "defense": stats['defense'],
+        "inventory": [], "equipment": {"weapon": None, "armor": None},
     }
     return jsonify(player), 201
 
@@ -232,7 +225,6 @@ def create_hero():
 @login_required
 def status():
     data = request.get_json() or {}
-    # Лучше брать имя из сессии/g.user, но оставляем совместимость с player_id
     player_name = (data.get('player_id') or g.user.get('name')).strip()
 
     if not player_name:
@@ -255,128 +247,32 @@ def status():
     except: equipment = {"weapon": None, "armor": None}
 
     hero = {
-        "name": row["name"],
-        "class": row["class"],
-        "level": row["level"],
-        "aden": row["adenas"],
-        "exp": row["exp"],
-        "next_level_exp": row["next_level_exp"],
-        "current_hp": row["current_hp"],
-        "max_hp": row["max_hp"],
-        "attack": row["attack"],
-        "defense": row["defense"],
-        "inventory": inventory,
-        "equipment": equipment,
+        "name": row["name"], "class": row["class"], "level": row["level"],
+        "aden": row["adenas"], "exp": row["exp"], "next_level_exp": row["next_level_exp"],
+        "current_hp": row["current_hp"], "max_hp": row["max_hp"],
+        "attack": row["attack"], "defense": row["defense"],
+        "inventory": inventory, "equipment": equipment,
     }
 
     attack, defense = calc_stats(hero)
 
     resp = {
-        'name': hero['name'],
-        'class': hero['class'],
-        'level': hero['level'],
-        'exp': hero['exp'],
-        'next_level_exp': hero['next_level_exp'],
-        'aden': hero['aden'],
-        'current_hp': hero['current_hp'],
-        'max_hp': hero['max_hp'],
-        'attack': attack,
-        'defense': defense,
-        'inventory': hero['inventory'],
-        'equipment': hero['equipment'],
+        'name': hero['name'], 'class': hero['class'], 'level': hero['level'],
+        'exp': hero['exp'], 'next_level_exp': hero['next_level_exp'],
+        'aden': hero['aden'], 'current_hp': hero['current_hp'], 'max_hp': hero['max_hp'],
+        'attack': attack, 'defense': defense,
+        'inventory': hero['inventory'], 'equipment': hero['equipment'],
     }
     return jsonify(resp)
 
 
 # -----------------------------------------------------------------------------
-# Чат (только БД, без in-memory списка)
+# Чат и админ-команды
 # -----------------------------------------------------------------------------
-
-@app.route('/api/chat/send', methods=['POST'])
-@login_required
-def api_chat_send():
-    data = request.get_json() or {}
-    player_id = data.get('player_id')
-    message = (data.get('message') or '').strip()
-
-    if not player_id:
-        return jsonify({'error': 'player_id обязателен'}), 400
-    if not message:
-        return jsonify({'error': 'Пустое сообщение'}), 400
-
-    # Получаем имя игрока по ID
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT name FROM players WHERE id = ?", (player_id,))
-    row = cur.fetchone()
-    conn.close()
-
-    if not row:
-        return jsonify({'error': 'Игрок не найден'}), 404
-
-    sender_name = row['name']
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO chat_messages (player_name, message, type, created_at)
-        VALUES (?, ?, ?, datetime('now'))
-    ''', (sender_name, message, 'chat'))
-    conn.commit()
-    conn.close()
-
-    return jsonify({'status': 'ok'})
-
-
-@app.route('/api/chat/messages', methods=['GET'])
-@login_required
-def api_chat_messages():
-    limit = min(int(request.args.get('limit', 50)), 100)
-
-    conn = get_db()
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute('''
-        SELECT player_name, message, type, created_at
-        FROM chat_messages
-        ORDER BY id DESC
-        LIMIT ?
-    ''', (limit,))
-    rows = cur.fetchall()
-    conn.close()
-
-    messages = [
-        {
-            'sender': r['player_name'],
-            'text': r['message'],
-            'is_system': r['type'] == 'system',
-            'time': r['created_at']
-        }
-        for r in reversed(rows)
-    ]
-
-    return jsonify({'messages': messages})
-
-
-# -----------------------------------------------------------------------------
-# Админ‑команды (/give)
-# -----------------------------------------------------------------------------
-
-def is_player_admin(name):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT is_admin FROM players WHERE name = ?", (name,))
-    row = cur.fetchone()
-    conn.close()
-    return row is not None and row[0] == 1
-
 
 def handle_give_command(parts, admin_name):
     if len(parts) < 4:
-        return {
-            'error': 'Формат: /give <target> adena <amount> или /give <target> item <id>',
-            'is_command_result': True
-        }
+        return {'error': 'Формат: /give <target> adena <amount> или /give <target> item <id>', 'is_command_result': True}
 
     target_name = parts[2]
     mode = parts[3].lower()
@@ -441,22 +337,14 @@ def handle_give_command(parts, admin_name):
             }
         else:
             return {'error': 'Режим должен быть "adena" или "item"', 'is_command_result': True}
-
     except Exception as e:
-            logger.error(f"Ошибка в handle_give_command: {e}")
-            return {'error': 'Внутренняя ошибка при выдаче предмета/адены', 'is_command_result': True}
+        logger.error(f"Ошибка в handle_give_command: {e}", exc_info=True)
+        return {'error': 'Внутренняя ошибка при выдаче', 'is_command_result': True}
 
     return {'error': 'Неизвестный режим выдачи', 'is_command_result': True}
 
 
 def handle_admin_command(admin_name, command_text):
-    """
-    Обрабатывает админ-команды вида:
-      /give Player1 adena 5000
-      /give Player1 item 123
-    Возвращает dict с результатом.
-    """
-    # Убираем слэш в начале, если есть
     if command_text.startswith('/'):
         command_text = command_text[1:]
 
@@ -465,7 +353,6 @@ def handle_admin_command(admin_name, command_text):
         return {'error': 'Пустая команда', 'is_command_result': True}
 
     cmd = parts[0].lower()
-
     if cmd == 'give':
         return handle_give_command(parts, admin_name)
 
@@ -484,7 +371,6 @@ def api_chat_send():
     if not message:
         return jsonify({'error': 'Пустое сообщение'}), 400
 
-    # Получаем имя игрока по ID
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT name, is_admin FROM players WHERE id = ?", (player_id,))
@@ -500,42 +386,89 @@ def api_chat_send():
     type_ = 'chat'
     response_message = None
 
-    # Если админ и пишет команду — обрабатываем как админ-команду
     if is_admin and message.startswith('/'):
         type_ = 'command'
         result = handle_admin_command(sender_name, message)
         if result.get('is_command_result'):
-            # Возвращаем результат команды как системное сообщение в чат
             response_message = result.get('success') and result.get('message') or result.get('error')
+
+            conn = get_db()
+        cur = conn.cursor()
+
+        if type_ == 'command':
+            # Для команд не сохраняем в чат, просто возвращаем результат
+            conn.close()
+            return jsonify({
+                'success': True,
+                'message': response_message,
+                'is_command': True
+            })
+
+        # Обычное сообщение в чат
+        try:
+            cur.execute('''
+                INSERT INTO chat_messages (player_name, message, type)
+                VALUES (?, ?, ?)
+            ''', (sender_name, message, 'chat'))
+            conn.commit()
+
+            resp = {
+                'id': cur.lastrowid,
+                'player_name': sender_name,
+                'message': message,
+                'type': 'chat',
+                'timestamp': None  # можно добавить CURRENT_TIMESTAMP в БД и брать оттуда
+            }
+            return jsonify(resp)
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении сообщения в чат: {e}", exc_info=True)
+            return jsonify({'error': 'Не удалось сохранить сообщение'}), 500
+        finally:
+            try:
+                conn.close()
+            except:
+                pass
+
+
+@app.route('/api/chat/history', methods=['GET'])
+@login_required
+def api_chat_history():
+    limit = request.args.get('limit', 50, type=int)
+    if limit < 1 or limit > 200:
+        limit = 50
 
     conn = get_db()
     cur = conn.cursor()
-    if response_message:
-        # Пишем в чат и результат команды, и само сообщение (чтобы было видно, что админ ввёл)
-        cur.execute('''
-            INSERT INTO chat_messages (player_name, message, type, created_at)
-            VALUES (?, ?, ?, datetime('now'))
-        ''', (sender_name, message, type_))
-        cur.execute('''
-            INSERT INTO chat_messages (player_name, message, type, created_at)
-            VALUES (?, ?, ?, datetime('now'))
-        ''', ('Система', response_message, 'system'))
-    else:
-        cur.execute('''
-            INSERT INTO chat_messages (player_name, message, type, created_at)
-            VALUES (?, ?, ?, datetime('now'))
-        ''', (sender_name, message, type_))
-    conn.commit()
+    # ORDER BY id DESC — самые свежие сверху
+    cur.execute('''
+        SELECT id, player_name, message, type, created_at
+        FROM chat_messages
+        ORDER BY id DESC
+        LIMIT ?
+    ''', (limit,))
+    rows = cur.fetchall()
     conn.close()
 
-    return jsonify({'status': 'ok'})
+    history = []
+    for r in rows:
+        history.append({
+            'id': r['id'],
+            'player_name': r['player_name'],
+            'message': r['message'],
+            'type': r['type'],
+            'created_at': r['created_at']
+        })
+
+    # Разворачиваем, чтобы было от старых к новым (как в чате)
+    history.reverse()
+    return jsonify(history)
 
 
 # -----------------------------------------------------------------------------
-# Точка входа
+# Точка входа для WSGI (Amvera / Gunicorn)
 # -----------------------------------------------------------------------------
+# app уже создан выше. Этот блок нужен только для локального запуска.
 if __name__ == '__main__':
-    # На Amvera этот блок не используется: там приложение запускается через gunicorn/uwsgi.
-    # Но для локальной отладки удобно.
     logger.info("Запуск сервера в режиме отладки (local)")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
