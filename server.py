@@ -487,5 +487,7 @@ def api_chat_history():
 # app уже создан выше. Этот блок нужен только для локального запуска.
 if __name__ == '__main__':
     logger.info("Запуск сервера в режиме отладки (local)")
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # На Amvera порт задаётся автоматически. 
+    # Оставляем 5000 только для твоего локального компьютера.
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
