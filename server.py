@@ -4,19 +4,17 @@ from functools import wraps
 import sqlite3
 from flask import Flask, request, jsonify, session, g
 
-
-# --- НАСТРОЙКА ЛОГИРОВАНИЯ ---
+# --- ЛОГИРОВАНИЕ ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 logger.addHandler(handler)
 
-# --- ОПРЕДЕЛЕНИЕ ПУТИ К БД (ЕДИНЫЙ И БЕЗОПАСНЫЙ) ---
+# --- ПУТЬ К БД (Amvera /data или локально) ---
 data_dir = '/data'
 can_use_data = False
 
-# Проверяем, можем ли писать в /data (нужно для Amvera)
 if os.path.exists(data_dir):
     try:
         test_file = os.path.join(data_dir, '.amvera_check')
@@ -34,15 +32,14 @@ else:
     DB_PATH = os.path.join(BASE_DIR, 'game.db')
 
 logger.info(f"[INFO] База данных будет использоваться по пути: {DB_PATH}")
+
 # --- ФУНКЦИИ БД ---
 def get_db():
-    """Возвращает соединение с БД по правильному пути"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    """Создаёт таблицы, если их нет"""
     logger.info("[INIT] Инициализация таблиц базы данных...")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -74,17 +71,16 @@ def init_db():
     conn.close()
     logger.info("[INIT] Таблицы БД проверены/созданы.")
 
-# ВАЖНО: Сначала определяем функции, потом вызываем инициализацию
 init_db()
+
 # --- СОЗДАНИЕ ПРИЛОЖЕНИЯ ---
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
-# --- ИМПОРТЫ (БЕЗ get_db!) ---
-# Оставь только те, которые реально нужны для логики классов и предметов
+# --- ИМПОРТЫ ИГР. МОДУЛЕЙ ---
+# Убедись, что файлы items.py и classes.py есть в папке проекта
 from items import ITEMS_DB, calc_stats
 from classes import get_class_stats, class_stats
-# from db import register_player  # Если register_player нужен отдельно — раскомментируй, но убедись, что там нет get_db
 
 # --- ДЕКОРАТОР АВТОРИЗАЦИИ ---
 def login_required(f):
@@ -94,6 +90,9 @@ def login_required(f):
             return jsonify({"error": "Требуется авторизация"}), 401
         return f(*args, **kwargs)
     return decorated_function
+
+# --- РОУТЫ ---
+
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json() or {}
@@ -106,16 +105,13 @@ def register():
     conn = get_db()
     cur = conn.cursor()
     try:
-        # Получаем базовые статы класса
         stats = get_class_stats(p_class) or {"attack": 5, "defense": 3}
-        
         cur.execute('''
             INSERT INTO players (name, class, attack, defense)
             VALUES (?, ?, ?, ?)
         ''', (name, p_class, stats.get("attack", 5), stats.get("defense", 3)))
         player_id = cur.lastrowid
         conn.commit()
-        
         session['player_id'] = player_id
         return jsonify({"ok": True, "player_id": player_id, "name": name, "class": p_class})
     except sqlite3.IntegrityError:
@@ -142,6 +138,7 @@ def login():
         return jsonify({"ok": True, "player_id": row['id'], "name": name})
     else:
         return jsonify({"error": "Игрок не найден"}), 404
+
 @app.route('/player-status')
 @login_required
 def player_status():
@@ -151,9 +148,7 @@ def player_status():
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute('''
-        SELECT * FROM players WHERE id = ?
-    ''', (player_id,))
+    cur.execute('SELECT * FROM players WHERE id = ?', (player_id,))
     row = cur.fetchone()
     conn.close()
 
@@ -161,27 +156,23 @@ def player_status():
         return jsonify({"error": "Игрок не найден в БД"}), 404
 
     data = dict(row)
-    # Превращаем строку инвентаря в список
     inv_str = data.get('inventory') or ''
     data['inventory'] = [x.strip() for x in inv_str.split(',') if x.strip()]
-    
-    # Добавляем процент HP для фронтенда
     max_hp = max(1, data.get('max_hp', 1))
     current_hp = max(0, data.get('current_hp', 0))
     data['hp_percent'] = int((current_hp / max_hp) * 100)
-
     return jsonify(data)
+
 @app.route('/chat-history')
 @login_required
 def chat_history():
     limit = request.args.get('limit', 30, type=int)
     if limit > 100:
         limit = 100
-
     player_id = session.get('player_id')
+
     conn = get_db()
     cur = conn.cursor()
-    
     cur.execute('''
         SELECT cm.id, p.name AS player_name, cm.text, cm.created_at
         FROM chat_messages cm
@@ -200,7 +191,7 @@ def chat_history():
             "text": r["text"],
             "created_at": r["created_at"]
         })
-    messages.reverse() # Старые сверху
+    messages.reverse()
     return jsonify(messages)
 
 @app.route('/chat-send', methods=['POST'])
@@ -224,6 +215,7 @@ def chat_send():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
 import random
 
 @app.route('/fight', methods=['POST'])
@@ -233,7 +225,6 @@ def fight():
     conn = get_db()
     cur = conn.cursor()
 
-    # Получаем игрока
     cur.execute('SELECT * FROM players WHERE id = ?', (player_id,))
     p = cur.fetchone()
     if not p:
@@ -241,24 +232,17 @@ def fight():
         return jsonify({"error": "Игрок не найден"}), 404
     
     player = dict(p)
-    
-    # Параметры моба (можно вынести в отдельную таблицу позже)
     mob_hp_start = 50
     mob_attack = 8
-    
-    # Читаем текущий HP моба из сессии (если бой уже идёт) или начинаем новый
     current_mob_hp = session.get('mob_hp')
-    
+
     if current_mob_hp is None or current_mob_hp <= 0:
         current_mob_hp = mob_hp_start
         session['mob_hp'] = current_mob_hp
         session['fight_started'] = True
 
-    # Наносим урон мобу
     damage_done = max(1, player['attack'] + random.randint(-2, 2))
     new_mob_hp = current_mob_hp - damage_done
-
-    # Моб бьёт в ответ
     damage_received = max(1, mob_attack + random.randint(-1, 1))
     new_player_hp = player['current_hp'] - damage_received
 
@@ -273,7 +257,6 @@ def fight():
     else:
         session['mob_hp'] = new_mob_hp
 
-    # Обновляем игрока в БД
     cur.execute('''
         UPDATE players
         SET current_hp = ?, exp = ?, adenas = ?
@@ -292,3 +275,8 @@ def fight():
         "aden_gained": aden_gain
     }
     return jsonify(result)
+
+# Главная страница — просто отдаём index.html или game.html
+@app.route('/')
+def index():
+    return send_from_directory('static', 'game.html')
