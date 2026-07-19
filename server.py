@@ -4,7 +4,7 @@ import logging
 from functools import wraps
 
 import sqlite3
-from flask import Flask, request, send_from_directory, jsonify, session, g
+from flask import Flask, request, send_from_directory, render_template, jsonify, session, g
 
 # Импорты твоего проекта
 from db import get_db
@@ -124,6 +124,9 @@ def game_page():
         return send_from_directory('templates', 'login.html')
     return send_from_directory('templates', 'game.html')
 
+@app.route('/')
+def index():
+    return render_template('game.html')
 
 @app.route('/login', methods=['POST'])
 def login():
