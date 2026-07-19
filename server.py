@@ -29,6 +29,7 @@ def migrate_db():
     logger.info("Запуск миграций БД...")
     try:
         conn = get_db()
+        conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
         # Добавляем is_admin, если нет
@@ -82,6 +83,7 @@ def load_user():
     g.user = None
     if 'user_id' in session:
         conn = get_db()
+        conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute("SELECT id, name, is_admin FROM players WHERE id = ?", (session['user_id'],))
         row = cur.fetchone()
@@ -132,6 +134,7 @@ def login():
         return jsonify({'error': 'Имя обязательно'}), 400
 
     conn = get_db()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     # Важно: выбираем все нужные поля
     cur.execute("SELECT id, name, class, level, adenas, exp, next_level_exp, current_hp, max_hp, attack, defense, inventory_json, equipment_json FROM players WHERE name = ?", (name,))
@@ -140,6 +143,7 @@ def login():
 
     if not row:
         return jsonify({'error': 'Игрок не найден'}), 404
+    session['user_id'] = row['id']
 
     # Преобразуем row в dict (если твой get_db возвращает Row с доступом по ключу — ок; если кортеж — см. примечание ниже)
     player = {
@@ -191,6 +195,7 @@ def create_hero():
         return jsonify({"error": "Недопустимый класс", "allowed": allowed}), 400
 
     conn = get_db()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute("SELECT id FROM players WHERE user_id = ?", (g.user['id'],))
@@ -235,6 +240,7 @@ def status():
             return jsonify({"error": "player_id обязателен"}), 400
 
     conn = get_db()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     # ИЩЕМ ПО ID, а не по имени
     cur.execute('''
@@ -291,6 +297,7 @@ def handle_give_command(parts, admin_name):
     mode = parts[3].lower()
 
     conn = get_db()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     try:
@@ -385,6 +392,7 @@ def api_chat_send():
         return jsonify({'error': 'Пустое сообщение'}), 400
 
     conn = get_db()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute("SELECT name, is_admin FROM players WHERE id = ?", (player_id,))
@@ -446,6 +454,7 @@ def api_chat_history():
         limit = 50
 
     conn = get_db()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     # ORDER BY id DESC — самые свежие сверху
     cur.execute('''

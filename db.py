@@ -12,6 +12,7 @@ def get_db():
     """Возвращает соединение с БД. Создаёт таблицу players, если её нет."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row  # Чтобы обращаться к колонкам по имени
+    conn.row_factory = sqlite3.Row      
     cursor = conn.cursor()
 
     # Создаём таблицу с нужными колонками и без лишнего stats_json
