@@ -7,7 +7,7 @@ import sqlite3
 from flask import Flask, request, send_from_directory, render_template, jsonify, session, g
 
 # Импорты твоего проекта
-from db import get_db
+from db import get_db, register_player
 from items import ITEMS_DB, calc_stats
 from classes import get_class_stats, class_stats  # важно: должен быть class_stats
 
@@ -33,7 +33,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amve
 def migrate_db():
     logger.info("Запуск миграций БД...")
     try:
-        conn = get_db(DB_FILE)
+        conn = get_db()
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -105,7 +105,7 @@ except Exception as e:
 def load_user():
     g.user = None
     if 'user_id' in session:
-        conn = get_db(DB_FILE)
+        conn = get_db()
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute("SELECT id, name, is_admin FROM players WHERE id = ?", (session['user_id'],))
@@ -152,7 +152,7 @@ def login():
     if not name:
         return jsonify({'error': 'Имя обязательно'}), 400
 
-    conn = get_db(DB_FILE)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
@@ -242,7 +242,7 @@ def status():
         else:
             return jsonify({"error": "player_id обязателен"}), 400
 
-    conn = get_db(DB_FILE)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     # ИЩЕМ ПО ID, а не по имени
@@ -299,7 +299,7 @@ def handle_give_command(parts, admin_name):
     target_name = parts[2]
     mode = parts[3].lower()
 
-    conn = get_db(DB_FILE)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
@@ -400,7 +400,7 @@ def api_chat_send():
         # Это почти невозможно при работающей сессии, но на всякий случай
         return jsonify({'error': 'Не удалось определить игрока'}), 401
 
-    conn = get_db(DB_FILE)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
@@ -463,7 +463,7 @@ def api_chat_history():
     if limit < 1 or limit > 200:
         limit = 50
 
-    conn = get_db(DB_FILE)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     # ORDER BY id DESC — самые свежие сверху
