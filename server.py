@@ -11,20 +11,25 @@ from db import get_db
 from items import ITEMS_DB, calc_stats
 from classes import get_class_stats, class_stats  # важно: должен быть class_stats
 
-DATA_DIR = '.'  # на Amvera лучше не использовать /data без проверки прав
-DB_FILE = os.path.join(DATA_DIR, 'game.db')
-os.makedirs(DATA_DIR, exist_ok=True)
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
+# Если переменная AMVERA есть в окружении — значит, мы в облаке Amvera.
+# Там используем папку /data — она сохраняется между перезапусками.
+# Локально (на ПК) оставим текущую папку '.'
+if "AMVERA" in os.environ:
+    DATA_DIR = "/data"
+else:
+    DATA_DIR = "."
+
+DB_FILE = os.path.join(DATA_DIR, "game.db")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+logger.info(f"База данных будет храниться в: {DB_FILE}")
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
 
-# -----------------------------------------------------------------------------
-# Миграции БД (безопасно, не роняют сервер)
-# -----------------------------------------------------------------------------
 def migrate_db():
     logger.info("Запуск миграций БД...")
     try:
@@ -32,7 +37,28 @@ def migrate_db():
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
-        # Добавляем is_admin, если нет
+        # 1. Создаём таблицу players, если её нет (это решает твою ошибку)
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS players (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                class TEXT NOT NULL,
+                level INTEGER DEFAULT 1,
+                adenas INTEGER DEFAULT 0,
+                exp INTEGER DEFAULT 0,
+                next_level_exp INTEGER DEFAULT 100,
+                current_hp INTEGER NOT NULL,
+                max_hp INTEGER NOT NULL,
+                attack INTEGER NOT NULL,
+                defense INTEGER NOT NULL,
+                inventory_json TEXT DEFAULT '[]',
+                equipment_json TEXT DEFAULT '{"weapon": null, "armor": null}',
+                is_admin INTEGER DEFAULT 0
+            )
+        ''')
+        logger.info("Миграция: таблица players готова (создана или проверена)")
+
+        # 2. Если вдруг старая база без is_admin (редкий случай), добавим колонку
         try:
             cur.execute("PRAGMA table_info(players)")
             cols = [c[1] for c in cur.fetchall()]
@@ -40,22 +66,19 @@ def migrate_db():
                 cur.execute("ALTER TABLE players ADD COLUMN is_admin INTEGER DEFAULT 0")
                 logger.info("Миграция: добавлена колонка is_admin в players")
         except Exception as e:
-            logger.error(f"Ошибка миграции is_admin: {e}")
+            logger.warning(f"Не удалось проверить/добавить is_admin: {e}")
 
-        # Создаём chat_messages, если нет
-        try:
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS chat_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    player_name TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    type TEXT NOT NULL DEFAULT 'chat',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            logger.info("Миграция: таблица chat_messages готова")
-        except Exception as e:
-            logger.error(f"Ошибка создания chat_messages: {e}")
+        # 3. Создаём chat_messages, если нет
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name TEXT NOT NULL,
+                message TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'chat',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        logger.info("Миграция: таблица chat_messages готова")
 
         conn.commit()
     except Exception as e:

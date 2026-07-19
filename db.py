@@ -1,6 +1,8 @@
 import sqlite3
 import os
 import json
+from server import DB_FILE
+
 
 # На Amvera нельзя писать в /data. Используем текущую папку проекта.
 DATA_DIR = '.'
