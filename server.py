@@ -108,25 +108,18 @@ def admin_required(f):
             return jsonify({'error': 'Нет прав администратора'}), 403
         return f(*args, **kwargs)
     return decorated
-
-
 # -----------------------------------------------------------------------------
-# Эндпоинты: логин, регистрация, статус
+# Эндпоинты: главная, логин, регистрация, статус
 # -----------------------------------------------------------------------------
-@app.route('/')
-def root():
-    return send_from_directory('templates', 'login.html')
-
-
-@app.route('/game.html')
-def game_page():
-    if not g.user:
-        return send_from_directory('templates', 'login.html')
-    return send_from_directory('templates', 'game.html')
-
 @app.route('/')
 def index():
+    """Главная страница: логин, если не залогинен; иначе — игра."""
+    if not g.user:
+        # Показываем форму входа
+        return render_template('login.html')
+    # Показываем игру
     return render_template('game.html')
+
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -139,18 +132,23 @@ def login():
     conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    # Важно: выбираем все нужные поля
-    cur.execute("SELECT id, name, class, level, adenas, exp, next_level_exp, current_hp, max_hp, attack, defense, inventory_json, equipment_json FROM players WHERE name = ?", (name,))
+
+    cur.execute("""
+        SELECT id, name, class, level, adenas, exp, next_level_exp,
+               current_hp, max_hp, attack, defense, inventory_json, equipment_json
+        FROM players
+        WHERE name = ?
+    """, (name,))
     row = cur.fetchone()
     conn.close()
 
     if not row:
         return jsonify({'error': 'Игрок не найден'}), 404
+
     session['user_id'] = row['id']
 
-    # Преобразуем row в dict (если твой get_db возвращает Row с доступом по ключу — ок; если кортеж — см. примечание ниже)
     player = {
-        "id": row["id"],                # <--- ГЛАВНОЕ: добавляем id
+        "id": row["id"],
         "name": row["name"],
         "class": row["class"],
         "level": row["level"],
@@ -165,11 +163,12 @@ def login():
 
     try:
         inventory = json.loads(row['inventory_json'] or '[]')
-    except:
+    except Exception:
         inventory = []
+
     try:
         equipment = json.loads(row['equipment_json'] or '{}')
-    except:
+    except Exception:
         equipment = {"weapon": None, "armor": None}
 
     player['inventory'] = inventory
@@ -482,15 +481,3 @@ def api_chat_history():
     # Разворачиваем, чтобы было от старых к новым (как в чате)
     history.reverse()
     return jsonify(history)
-
-
-# -----------------------------------------------------------------------------
-# Точка входа для WSGI (Amvera / Gunicorn)
-# -----------------------------------------------------------------------------
-# app уже создан выше. Этот блок нужен только для локального запуска.
-if __name__ == '__main__':
-    logger.info("Запуск сервера в режиме отладки (local)")
-    # На Amvera порт задаётся автоматически. 
-    # Оставляем 5000 только для твоего локального компьютера.
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
