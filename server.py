@@ -29,6 +29,42 @@ logger.info(f"База данных будет храниться в: {DB_FILE}"
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
+DB_PATH = 'game.db'
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # чтобы можно было обращаться по именам колонок
+    return conn
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.executescript('''
+        CREATE TABLE IF NOT EXISTS players (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            class TEXT NOT NULL,
+            level INTEGER DEFAULT 1,
+            adenas INTEGER DEFAULT 0,
+            exp INTEGER DEFAULT 0,
+            next_level_exp INTEGER DEFAULT 100,
+            current_hp INTEGER DEFAULT 50,
+            max_hp INTEGER DEFAULT 50,
+            attack INTEGER DEFAULT 5,
+            defense INTEGER DEFAULT 3,
+            inventory TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+    ''')
+    conn.commit()
+    conn.close()
 
 def migrate_db():
     logger.info("Запуск миграций БД...")
@@ -117,11 +153,12 @@ def load_user():
 
 def login_required(f):
     @wraps(f)
-    def decorated(*args, **kwargs):
-        if not g.user:
-            return jsonify({'error': 'Требуется авторизация'}), 401
+    def decorated_function(*args, **kwargs):
+        if 'player_id' not in session:
+            return jsonify({"error": "Требуется авторизация"}), 401
         return f(*args, **kwargs)
-    return decorated
+    return decorated_function
+
 
 
 def admin_required(f):
@@ -382,78 +419,167 @@ def handle_admin_command(admin_name, command_text):
     return {'error': f'Неизвестная команда: /{cmd}', 'is_command_result': True}
 
 
-@app.route('/api/chat/send', methods=['POST'])
+# --- ОТПРАВКА СООБЩЕНИЯ (game.html: sendChat) ---
+@app.route('/chat-send', methods=['POST'])
 @login_required
-def api_chat_send():
+def chat_send():
     data = request.get_json() or {}
-    message = (data.get('message') or '').strip()
+    text = (data.get('message') or '').strip()
+    if not text:
+        return jsonify({"error": "Пустое сообщение"}), 400
 
-    if not message:
-        return jsonify({'error': 'Пустое сообщение'}), 400
-
-    # ГЛАВНОЕ ИСПРАВЛЕНИЕ: берём player_id из сессии, если не передан
-    player_id = data.get('player_id')
-    if not player_id and g.user:
-        player_id = g.user['id']
-
+    player_id = session.get('player_id')
     if not player_id:
-        # Это почти невозможно при работающей сессии, но на всякий случай
-        return jsonify({'error': 'Не удалось определить игрока'}), 401
+        return jsonify({"error": "Нет сессии"}), 401
 
     conn = get_db()
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-
-    # Теперь мы уверены, что player_id — это то, что реально есть в сессии
-    cur.execute("SELECT name, is_admin FROM players WHERE id = ?", (player_id,))
-    row = cur.fetchone()
-
-    if not row:
-        conn.close()
-        # Тут можно даже логировать: "Сессия есть, но игрока с таким ID нет в БД"
-        return jsonify({'error': 'Игрок не найден в базе'}), 404
-
-    sender_name = row['name']
-    is_admin = bool(row['is_admin'])
-
-    type_ = 'chat'
-    response_message = None
-
-    if is_admin and message.startswith('/'):
-        type_ = 'command'
-        result = handle_admin_command(sender_name, message)
-        if result.get('is_command_result'):
-            response_message = result.get('success') and result.get('message') or result.get('error')
-
-            conn.close()
-            return jsonify({
-                'success': True,
-                'message': response_message,
-                'is_command': True
-            })
-
     try:
         cur.execute('''
-            INSERT INTO chat_messages (player_name, message, type)
-            VALUES (?, ?, ?)
-        ''', (sender_name, message, 'chat'))
+            INSERT INTO chat_messages (player_id, text)
+            VALUES (?, ?)
+        ''', (player_id, text))
         conn.commit()
-
-        resp = {
-            'id': cur.lastrowid,
-            'player_name': sender_name,
-            'message': message,
-            'type': 'chat',
-        }
-        return jsonify(resp)
+        return jsonify({"ok": True})
     except Exception as e:
-        logger.error(f"Ошибка при сохранении сообщения в чат: {e}", exc_info=True)
-        return jsonify({'error': 'Не удалось сохранить сообщение'}), 500
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
     finally:
-        try:
-            conn.close()
-        except:
-            pass
+        conn.close()
+
+
+# --- ИСТОРИЯ ЧАТА (game.html: loadChatMessages) ---
+@app.route('/chat-history')
+@login_required
+def chat_history():
+    limit = request.args.get('limit', 30, type=int)
+    if limit > 100:
+        limit = 100
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('''
+        SELECT cm.id, p.name AS player_name, cm.text, cm.created_at
+        FROM chat_messages cm
+        JOIN players p ON cm.player_id = p.id
+        ORDER BY cm.id DESC
+        LIMIT ?
+    ''', (limit,))
+    rows = cur.fetchall()
+    conn.close()
+
+    messages = []
+    for r in rows:
+        messages.append({
+            "id": r["id"],
+            "player_name": r["player_name"],
+            "text": r["text"],
+            "created_at": r["created_at"]
+        })
+
+    # возвращаем в прямом порядке (старые → новые), как удобнее для чата
+    messages.reverse()
+    return jsonify(messages)
+
+# --- РОУТ СТАТУСА (для game.html) ---
+@app.route('/player-status')
+@login_required
+def player_status():
+    player_id = session.get('player_id')
+    if not player_id:
+        return jsonify({"error": "Нет сессии"}), 401
+
+    conn = get_db()
+    cur = conn.cursor()
+    # Важно: выбирай ровно те поля, которые ожидает game.html
+    cur.execute('''
+        SELECT id, name, class, level, adenas, exp, next_level_exp,
+               current_hp, max_hp, attack, defense, inventory
+        FROM players WHERE id = ?
+    ''', (player_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({"error": "Игрок не найден"}), 404
+
+    data = dict(row)
+    # inventory в БД может быть строкой через запятую — превращаем в список
+    inv_str = data.get('inventory') or ''
+    data['inventory'] = [x.strip() for x in inv_str.split(',') if x.strip()]
+
+    # Добавим проценты для полоски HP
+    max_hp = data.get('max_hp', 1)
+    current_hp = max(0, data.get('current_hp', 0))
+    data['hp_percent'] = int(current_hp / max_hp * 100)
+
+    return jsonify(data)
+
+import random
+
+@app.route('/fight', methods=['POST'])
+@login_required
+def fight():
+    player_id = session.get('player_id')
+    if not player_id:
+        return jsonify({"error": "Нет сессии"}), 401
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем игрока
+    cur.execute('SELECT * FROM players WHERE id = ?', (player_id,))
+    p = cur.fetchone()
+    if not p:
+        conn.close()
+        return jsonify({"error": "Игрок не найден"}), 404
+    player = dict(p)
+
+    # Простой моб (можно позже вынести в отдельную таблицу mobs)
+    mob_hp = 50
+    mob_attack = 8
+
+    # Если у игрока уже есть данные о мобе в сессии — можно брать оттуда, пока делаем просто
+    # Наносим урон мобу
+    damage_done = max(1, player['attack'] + random.randint(-2, 2))
+    mob_hp -= damage_done
+
+    # Моб бьёт в ответ
+    damage_received = max(1, mob_attack + random.randint(-1, 1))
+    new_hp = player['current_hp'] - damage_received
+
+    is_mob_dead = mob_hp <= 0
+    if is_mob_dead:
+        # Даём опыт и адены
+        exp_gain = 20
+        aden_gain = 15
+        new_exp = player['exp'] + exp_gain
+        new_aden = player['adenas'] + aden_gain
+    else:
+        exp_gain = aden_gain = 0
+        new_exp = player['exp']
+        new_aden = player['adenas']
+
+    # Сохраняем изменения игрока
+    cur.execute('''
+        UPDATE players
+        SET current_hp = ?, exp = ?, adenas = ?
+        WHERE id = ?
+    ''', (new_hp, new_exp, new_aden, player_id))
+
+    conn.commit()
+    conn.close()
+
+    result = {
+        "damage_done": damage_done,
+        "damage_received": damage_received,
+        "player_hp": new_hp,
+        "mob_hp": mob_hp,
+        "is_mob_dead": is_mob_dead,
+        "exp_gained": exp_gain,
+        "aden_gained": aden_gain,
+    }
+    return jsonify(result)
 
 
 @app.route('/api/chat/history', methods=['GET'])

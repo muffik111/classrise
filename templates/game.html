@@ -2,28 +2,34 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>RPG — Игровой процесс</title>
+  <title>ClassRise — Игровой процесс</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 0 15px; }
-    .section { border: 1px solid #ccc; padding: 12px; margin-bottom: 16px; border-radius: 6px; }
-    button { padding: 8px 14px; cursor: pointer; margin-right: 6px; background: #3498db; color: white; border: none; }
+    body { font-family: 'Courier New', Courier, monospace; max-width: 900px; margin: 20px auto; padding: 0 15px; background: #121212; color: #e0e0e0; }
+    .section { border: 1px solid #444; padding: 15px; margin-bottom: 20px; border-radius: 8px; background: #1e1e1e; }
+    h3 { margin-top: 0; color: #ffd700; border-bottom: 1px solid #555; padding-bottom: 5px; }
+    
+    button { padding: 8px 16px; cursor: pointer; margin-right: 8px; background: #3498db; color: white; border: none; border-radius: 4px; font-family: inherit; }
     button:hover { background: #2980b9; }
-    input, select { padding: 6px; margin-right: 8px; }
-    .log { background: #f5f5f5; padding: 10px; border: 1px solid #ddd; min-height: 80px; font-family: monospace; white-space: pre-wrap; }
+    button:disabled { background: #555; cursor: not-allowed; }
+    input, select { padding: 6px; margin-right: 8px; border: 1px solid #555; background: #000; color: #fff; }
+    
+    .log { background: #000; padding: 10px; border: 1px solid #333; min-height: 100px; font-family: monospace; white-space: pre-wrap; color: #0f0; overflow-y: auto; max-height: 200px; }
     table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; }
-    .error { color: red; }
+    th, td { border: 1px solid #555; padding: 4px 6px; text-align: left; background: #2a2a2a; }
+    th { background: #333; }
+    .error { color: #ff5555; font-weight: bold; }
+    .success { color: #55ff55; }
 
-    /* Стили чата (Lineage-style) */
+    /* Стили чата (Lineage 2 Interlude style) */
     #chat-panel {
       margin-top: 24px;
       padding: 10px;
-      border: 1px solid #444;
+      border: 1px solid #666;
       background: #1a1a1d;
       border-radius: 6px;
     }
     #chat-messages {
-      height: 180px;
+      height: 220px;
       overflow-y: auto;
       background: #000;
       padding: 8px;
@@ -31,73 +37,58 @@
       font-family: monospace;
       border: 1px solid #333;
       margin-bottom: 8px;
+      box-sizing: border-box;
     }
-    .chat-time { color: #555; font-size: 0.85em; margin-left: 8px; }
+    .chat-time { color: #555; font-size: 0.8em; margin-left: 10px; }
     .chat-sender-sys { color: #aaa; }
     .chat-sender-player { color: #ddd; }
     .chat-text { color: #fff; }
+    .chat-system-msg { color: #ffff00; } /* Системные сообщения жёлтым */
   </style>
 </head>
 <body>
-  <!-- Проверка авторизации: если нет сессии, кидаем на логин -->
-  <script>
-    // Мы больше НЕ берем player_id из localStorage здесь.
-    // Авторизация должна происходить через login.html, который сохраняет session cookie.
-    // Если ты хочешь проверять наличие сессии через JS, лучше делать это через запрос к /status или /login.
-    // Но самый простой способ для Flask-сессий — просто попробовать загрузить статус.
-  </script>
 
-  <h1>RPG в стиле Lineage 2</h1>
+  <h1 style="color: #ffd700;">ClassRise: Текстовая MMORPG</h1>
 
   <!-- Статус и инвентарь -->
   <div class="section">
     <h3>Статус героя</h3>
-    <button onclick="getStatus()">Обновить статус</button>
+    <button onclick="loadStatus()" id="btn-status">Обновить статус</button>
     <div id="statusBox"></div>
   </div>
 
   <!-- Бой -->
   <div class="section">
     <h3>Бой</h3>
-    <button onclick="fight()">Сразиться с мобом</button>
+    <p>Сразитесь с обычным мобом (HP: 50). Механика: вы бьёте → моб бьёт в ответ.</p>
+    <button onclick="startFight()" id="btn-fight">Атаковать моба!</button>
     <div id="fightLog" class="log"></div>
   </div>
 
-  <!-- Магазин (список предметов) -->
+  <!-- Магазин (статичный список для теста) -->
   <div class="section">
-    <h3>Магазин (предметы)</h3>
-    <p>ID предмета = его номер в базе (1–7).</p>
+    <h3>Магазин (Адены)</h3>
+    <p>ID предмета = его номер. Пока покупка не реализована, только пример таблицы.</p>
     <table>
       <thead>
-        <tr><th>ID</th><th>Название</th><th>Тип</th><th>Бонус ATK</th><th>Бонус DEF</th><th>Цена (Адены)</th></tr>
+        <tr><th>ID</th><th>Название</th><th>Тип</th><th>ATK</th><th>DEF</th><th>Цена</th></tr>
       </thead>
       <tbody id="shopTableBody"></tbody>
     </table>
   </div>
 
-  <!-- Надевание предметов -->
+  <!-- Экипировка (заглушка, требует доработки в server.py) -->
   <div class="section">
     <h3>Экипировка</h3>
-    <p><strong>Важно:</strong> предмет должен быть в инвентаре.</p>
+    <p><span class="error">Внимание:</span> Эта механика требует доработки БД. Сейчас только интерфейс.</p>
     <label>ID оружия:</label>
     <input type="number" id="equipWeaponId" placeholder="например 2" />
-    <button onclick="equipItem('weapon')">Надеть оружие</button>
-    <br /><br />
-    <label>ID брони:</label>
-    <input type="number" id="equipArmorId" placeholder="например 5" />
-    <button onclick="equipItem('armor')">Надеть броню</button>
-    <div id="equipLog" class="log"></div>
-  </div>
-
-  <!-- Лог ошибок -->
-  <div class="section">
-    <h3>Лог</h3>
-    <div id="globalLog" class="log"></div>
+    <button onclick="alert('Эта функция требует доработки серверной части (route /equip)')" style="background:#555;">Надеть оружие</button>
   </div>
 
   <!-- ЧАТ -->
   <div id="chat-panel">
-    <h4 style="margin: 0 0 8px 0; color: #ddd;">Общий чат</h4>
+    <h4 style="margin: 0 0 8px 0; color: #888;">Общий чат</h4>
     <div id="chat-messages"></div>
     <div style="display: flex; gap: 8px;">
       <input type="text" id="chat-input" placeholder="Сообщение (Enter для отправки)" style="flex: 1; padding: 6px; border: 1px solid #555; background: #222; color: #fff;">
@@ -106,38 +97,119 @@
   </div>
 
   <script>
-    const API_URL = '';
-    
-    // ВАЖНО: currentPlayer хранит весь объект игрока, полученный от сервера.
-    // Здесь НЕТ player_id из localStorage. Он появится только после успешного логина.
-    let currentPlayer = null; 
-
+    // Глобальная переменная для хранения данных игрока
+    let currentPlayer = null;
     const chatMessagesBox = document.getElementById('chat-messages');
     const chatInput = document.getElementById('chat-input');
     const chatSendBtn = document.getElementById('chat-send');
 
-    async function apiPost(endpoint, data) {
-      const res = await fetch(API_URL + endpoint, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(data)
-      });
-      return await res.json();
-    }
+    // --- ИНИЦИАЛИЗАЦИЯ ПРИ ЗАГРУЗКЕ ---
+    document.addEventListener('DOMContentLoaded', () => {
+      console.log("Загрузка game.html...");
+      loadStatus(); // Пытаемся сразу получить статус. Если сессии нет - получим ошибку 401
+      loadChatMessages();
+      loadShop();
+    });
+
+    // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
     function addChatMessage(sender, text, isSystem = false) {
       const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
       const prefix = isSystem ? '[СИСТЕМА]' : `[${sender}]`;
+      const colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
+      
+      // Защита от XSS (очень базовая)
+      const safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
       const div = document.createElement('div');
       div.innerHTML = `
-        <span class="${isSystem ? 'chat-sender-sys' : 'chat-sender-player'}">${prefix}</span>
-        <span class="chat-text">${text}</span>
+        <span class="${colorClass}">${prefix}</span>
+        <span class="chat-text">${safeText}</span>
         <span class="chat-time">(${time})</span>
       `;
       chatMessagesBox.appendChild(div);
       chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
     }
+
+    async function apiRequest(endpoint, method = 'GET', data = null) {
+      const options = { method };
+      if (data) {
+        options.headers = {'Content-Type': 'application/json'};
+        options.body = JSON.stringify(data);
+      }
+      
+      try {
+        const res = await fetch(endpoint, options);
+        
+        // Обработка ошибок авторизации
+        if (res.status === 401) {
+          addChatMessage('СИСТЕМА', 'Сессия истекла! Вас перенаправляет на экран входа...', true);
+          setTimeout(() => window.location.href = '/login', 1500);
+          return null;
+        }
+
+        if (!res.ok) {
+          throw new Error(`Ошибка сервера: ${res.status}`);
+        }
+        return await res.json();
+      } catch (e) {
+        console.error(e);
+        addChatMessage('СИСТЕМА', e.message || 'Ошибка соединения с сервером', true);
+        return null;
+      }
+    }
+
+    // --- СТАТУС ИГРОКА ---
+
+    async function loadStatus() {
+      const statusBox = document.getElementById('statusBox');
+      statusBox.innerHTML = '<p>Загрузка статуса...</p>';
+      
+      const data = await apiRequest('/player-status');
+
+      if (!data) return; // Если была ошибка (401 и редирект), выходим
+
+      currentPlayer = data; // Сохраняем данные игрока глобально
+
+      let html = `
+        <p><b>Имя:</b> ${data.name} | <b>Класс:</b> ${data.class} | <b>Ур:</b> ${data.level}</p>
+        <p><b>EXP:</b> ${data.exp} / ${data.next_level_exp || 100} | <b>Адены:</b> ${data.adenas}</p>
+        <div style="width:200px; background:#333; border:1px solid #555;">
+           <div style="width:${Math.max(0, Math.min(100, data.current_hp / data.max_hp * 100))}% ; height:20px; ${data.current_hp > 0 ? 'background:#ff4444;' : 'background:red;'}"></div>
+        </div>
+        <p><b>HP:</b> ${data.current_hp}/${data.max_hp} | <b>ATK:</b> ${data.attack} | <b>DEF:</b> ${data.defense}</p>
+        <p><b>Инвентарь:</b> [${data.inventory.join(', ') || 'пусто'}]</p>
+      `;
+      statusBox.innerHTML = html;
+    }
+
+    // --- БОЙ ---
+
+    async function startFight() {
+      const log = document.getElementById('fightLog');
+      log.textContent = 'Вы замахиваетесь...';
+      
+      if (!currentPlayer) {
+        log.textContent = 'Ошибка: Нет данных игрока. Обновите страницу.';
+        return;
+      }
+
+      const result = await apiRequest('/fight', 'POST', { player_id: currentPlayer.id }); // player_id нужен для логики, но сервер проверит сессию
+
+      if (!result) return;
+
+      let msg = `Вы нанесли ${result.damage_done} урона.`;
+      if (result.is_mob_dead) msg += ' <b>Моб убит!</b>';
+      msg += ` Вы получили ${result.damage_received} урона.\n`;
+      msg += `Ваш HP: ${result.player_hp}. HP моба: ${result.mob_hp}.`;
+
+      log.innerHTML = msg;
+      
+      // Сразу обновляем статус, чтобы видеть новые HP
+      setTimeout(loadStatus, 500); 
+    }
+
+    // --- ЧАТ ---
 
     chatSendBtn.addEventListener('click', sendChat);
     chatInput.addEventListener('keydown', (e) => {
@@ -146,182 +218,75 @@
 
     async function sendChat() {
       const text = chatInput.value.trim();
-      
-      // ГЛАВНОЕ ИСПРАВЛЕНИЕ: проверяем наличие currentPlayer и берем ID оттуда
       if (!text) return;
-      if (!currentPlayer || typeof currentPlayer.id !== 'number') {
-        addChatMessage('СИСТЕМА', 'Нет данных игрока. Перезайдите в игру.', true);
+      if (!currentPlayer) {
+        addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
         return;
       }
 
       chatSendBtn.disabled = true;
       chatInput.disabled = true;
 
-      console.log('>>> Отправка чата. Player ID:', currentPlayer.id, 'Текст:', text);
-
       try {
-        const res = await fetch(API_URL + '/api/chat/send', {
+        // ВАЖНО: Не передаем player_id! Сервер сам знает, кто ты, по сессии.
+        const res = await fetch('/chat-send', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            player_id: currentPlayer.id, // Отправляем ЧИСЛО, а не строку!
-            message: text
-          })
+          body: JSON.stringify({ message: text })
         });
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || 'Ошибка сервера');
+        if (res.ok) {
+          chatInput.value = '';
+          loadChatMessages(); // Обновляем чат
+        } else {
+          const err = await res.json().catch(() => ({}));
+          addChatMessage('СИСТЕМА', err.error || 'Не удалось отправить', true);
         }
-
-        chatInput.value = '';
-        await loadChatMessages();
       } catch (e) {
-        console.error('Ошибка отправки чата:', e);
-        addChatMessage('СИСТЕМА', e.message || 'Не удалось отправить сообщение', true);
+        addChatMessage('СИСТЕМА', 'Ошибка сети', true);
       } finally {
         chatSendBtn.disabled = false;
         chatInput.disabled = false;
       }
     }
 
-    // ИСПРАВЛЕНО: эндпоинт history вместо messages (чтобы совпадал с server.py)
     async function loadChatMessages() {
-      try {
-        // limit=20 - грузим последние 20 сообщений
-        const res = await fetch(`${API_URL}/api/chat/history?limit=20`);
-        if (!res.ok) throw new Error('Не удалось загрузить чат');
-        
-        const data = await res.json();
-        chatMessagesBox.innerHTML = '';
+      const data = await apiRequest('/chat-history?limit=30');
+      if (!data || !Array.isArray(data)) return;
 
-        if (Array.isArray(data)) {
-          data.forEach(msg => {
-            // Ожидаем формат, который отдает server.py: {id, player_name, message, type, created_at}
-            const sender = msg.player_name || 'Unknown';
-            const text = msg.message || '';
-            const isSystem = msg.type === 'system'; // если у тебя есть системные сообщения
-            addChatMessage(sender, text, isSystem);
-          });
-        } else {
-            console.warn("Неожиданный формат истории чата:", data);
-        }
-      } catch (e) {
-        console.error('Ошибка загрузки сообщений:', e);
-      }
+      chatMessagesBox.innerHTML = '';
+      data.forEach(msg => {
+        // Ожидаем формат: { id, player_name, text } или { id, name, message }
+        const sender = msg.player_name || msg.name || 'Unknown';
+        const text = msg.text || msg.message || '';
+        addChatMessage(sender, text, false);
+      });
     }
 
-    async function getStatus() {
-      const statusBox = document.getElementById('statusBox');
-      const log = document.getElementById('globalLog');
-
-      if (!currentPlayer) {
-        statusBox.innerHTML = '<span class="error">Сначала войдите в игру!</span>';
-        return;
-      }
-
-      try {
-        // Эндпоинт /status ожидает player_id
-        const r = await apiPost('/status', {player_id: currentPlayer.id});
-
-        if (r.error) {
-          statusBox.innerHTML = '<span class="error">' + r.error + '</span>';
-          return;
-        }
-
-        let html = `
-          <p><b>Имя:</b> ${r.name} | <b>Класс:</b> ${r.class} | <b>Ур:</b> ${r.level}</p>
-          <p><b>EXP:</b> ${r.exp}/${r.next_level_exp} | <b>Адены:</b> ${r.aden}</p>
-          <p><b>HP:</b> ${r.current_hp}/${r.max_hp} | <b>ATK:</b> ${r.attack_final || r.attack} | <b>DEF:</b> ${r.defense_final || r.defense}</p>
-          <p><b>Экипировка:</b> Оружие=${r.equipment.weapon}, Броня=${r.equipment.armor}</p>
-          <p><b>Инвентарь:</b> [${r.inventory.join(', ') || 'пусто'}]</p>
-        `;
-        statusBox.innerHTML = html;
-        log.textContent = '';
-      } catch (e) {
-        log.textContent = 'Ошибка статуса: ' + e.message;
-      }
-    }
-
-    async function fight() {
-      const log = document.getElementById('fightLog');
-      if (!currentPlayer) {
-        log.textContent = 'Сначала войдите в игру!';
-        return;
-      }
-      try {
-        const r = await apiPost('/fight', {player_id: currentPlayer.id});
-        log.textContent = r.message || JSON.stringify(r, null, 2);
-      } catch (e) {
-        log.textContent = 'Ошибка боя: ' + e.message;
-      }
-    }
-
+    // --- МАГАЗИН (Статика) ---
     function loadShop() {
-      const items = {
-        1: {"name": "Ржавый меч", "type": "weapon", "bonus_attack": 5, "bonus_defense": 0, "price": 100},
-        2: {"name": "Стальной клинок", "type": "weapon", "bonus_attack": 12, "bonus_defense": 0, "price": 250},
-        3: {"name": "Лук новичка", "type": "weapon", "bonus_attack": 8, "bonus_defense": 0, "price": 180},
-        4: {"name": "Деревянный щит", "type": "armor", "bonus_attack": 0, "bonus_defense": 6, "price": 150},
-        5: {"name": "Тяжёлый стальной щит", "type": "armor", "bonus_attack": 0, "bonus_defense": 14, "price": 320},
-        6: {"name": "Кожаная броня", "type": "armor", "bonus_attack": 0, "bonus_defense": 8, "price": 200},
-        7: {"name": "Кольчуга", "type": "armor", "bonus_attack": 0, "bonus_defense": 16, "price": 400},
-      };
+      const items = [
+        {id: 1, name: "Ржавый меч", type: "weapon", atk: 5, def: 0, price: 100},
+        {id: 2, name: "Стальной клинок", type: "weapon", atk: 12, def: 0, price: 250},
+        {id: 3, name: "Лук новичка", type: "weapon", atk: 8, def: 0, price: 180},
+        {id: 4, name: "Деревянный щит", type: "armor", atk: 0, def: 6, price: 150},
+        {id: 5, name: "Тяжёлый щит", type: "armor", atk: 0, def: 14, price: 320},
+      ];
       const tbody = document.getElementById('shopTableBody');
       tbody.innerHTML = '';
-      Object.entries(items).forEach(([id, item]) => {
+      items.forEach(item => {
         tbody.insertAdjacentHTML('beforeend', `
           <tr>
-            <td>${id}</td>
+            <td>${item.id}</td>
             <td>${item.name}</td>
             <td>${item.type}</td>
-            <td>${item.bonus_attack}</td>
-            <td>${item.bonus_defense}</td>
-            <td>${item.price}</td>
+            <td>${item.atk}</td>
+            <td>${item.def}</td>
+            <td>${item.price} аден</td>
           </tr>
         `);
       });
     }
-
-    async function equipItem(slot) {
-      if (!currentPlayer) {
-        document.getElementById('equipLog').textContent = 'Сначала войдите в игру!';
-        return;
-      }
-      const idInput = document.getElementById(slot === 'weapon' ? 'equipWeaponId' : 'equipArmorId');
-      const itemId = Number(idInput.value);
-      const log = document.getElementById('equipLog');
-
-      if (!itemId || itemId <= 0) {
-        log.textContent = 'Введите корректный ID предмета.';
-        return;
-      }
-
-      try {
-        const r = await apiPost('/equip', {player_id: currentPlayer.id, item_id: itemId, slot: slot});
-        log.textContent = r.success ? r.message : ('Ошибка: ' + (r.message || JSON.stringify(r)));
-        setTimeout(getStatus, 500);
-      } catch (e) {
-        log.textContent = 'Ошибка при надевании: ' + e.message;
-      }
-    }
-
-    /**
-     * ЭТА ФУНКЦИЯ КРИТИЧЕСКИ ВАЖНА.
-     * Её нужно вызвать из login.html (или там, где происходит вход),
-     * передав туда JSON-объект, который вернул сервер при логине.
-     */
-    window.initGame = function(playerData) {
-        currentPlayer = playerData;
-        console.log("Инициализация игры для игрока:", currentPlayer);
-        
-        // Сразу показываем статус и грузим чат
-        getStatus();
-        loadChatMessages();
-    };
-
-    // Инициализация: загружаем магазин сразу
-    loadShop();
-
-    // Проверка: если ты открыл game.html напрямую, а не через логин,
-    // currentPlayer будет null. Лучше всего, чтобы login.html делал редирект
+  </script>
+</body>
+</html>
