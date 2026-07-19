@@ -1,42 +1,51 @@
 import os
-import json
 import logging
 from functools import wraps
-
 import sqlite3
-from flask import Flask, request, send_from_directory, render_template, jsonify, session, g
+from flask import Flask, request, jsonify, session
 
-# Импорты твоего проекта
-from db import get_db, register_player
-from items import ITEMS_DB, calc_stats
-from classes import get_class_stats, class_stats  # важно: должен быть class_stats
+# --- НАСТРОЙКА ПУТИ К БД (ЕДИНАЯ И БЕЗОПАСНАЯ) ---
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger(__name__)
-# Если переменная AMVERA есть в окружении — значит, мы в облаке Amvera.
-# Там используем папку /data — она сохраняется между перезапусками.
-# Локально (на ПК) оставим текущую папку '.'
-if "AMVERA" in os.environ:
-    DATA_DIR = "/data"
+# Сначала пробуем использовать /data (для Amvera)
+data_dir = '/data'
+
+# Проверяем, можем ли мы писать в /data
+can_use_data = False
+if os.path.exists(data_dir):
+    try:
+        test_file = os.path.join(data_dir, '.amvera_check')
+        with open(test_file, 'w') as f:
+            f.write('check')
+        os.remove(test_file)
+        can_use_data = True
+    except Exception:
+        can_use_data = False
+
+# Если на Amvera и можем писать в /data — используем его. Иначе — текущую папку.
+if can_use_data:
+    DB_PATH = os.path.join(data_dir, 'game.db')
 else:
-    DATA_DIR = "."
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DB_PATH = os.path.join(BASE_DIR, 'game.db')
 
-DB_FILE = os.path.join(DATA_DIR, "game.db")
-os.makedirs(DATA_DIR, exist_ok=True)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+logger.addHandler(handler)
 
-logger.info(f"База данных будет храниться в: {DB_FILE}")
+logger.info(f"[INFO] База данных будет использоваться по пути: {DB_PATH}")
 
-app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
-DB_PATH = 'game.db'
+# --- ФУНКЦИИ БД ---
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # чтобы можно было обращаться по именам колонок
+    conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
+    logger.info("[INIT] Инициализация таблиц базы данных...")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.executescript('''
@@ -65,6 +74,21 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
+    logger.info("[INIT] Таблицы БД проверены/созданы.")
+
+
+# --- СОЗДАНИЕ ПРИЛОЖЕНИЯ ---
+
+# ВАЖНО: сначала инициализируем БД, потом создаём app
+init_db()
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
+
+# Дальше идут твои импорты и роуты...
+from db import register_player  # если нужно
+from items import ITEMS_DB, calc_stats
+from classes import get_class_stats, class_stats
 
 def migrate_db():
     logger.info("Запуск миграций БД...")
