@@ -385,24 +385,32 @@ def handle_admin_command(admin_name, command_text):
 @login_required
 def api_chat_send():
     data = request.get_json() or {}
-    player_id = data.get('player_id')
     message = (data.get('message') or '').strip()
 
-    if not player_id:
-        return jsonify({'error': 'player_id обязателен'}), 400
     if not message:
         return jsonify({'error': 'Пустое сообщение'}), 400
+
+    # ГЛАВНОЕ ИСПРАВЛЕНИЕ: берём player_id из сессии, если не передан
+    player_id = data.get('player_id')
+    if not player_id and g.user:
+        player_id = g.user['id']
+
+    if not player_id:
+        # Это почти невозможно при работающей сессии, но на всякий случай
+        return jsonify({'error': 'Не удалось определить игрока'}), 401
 
     conn = get_db()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
+    # Теперь мы уверены, что player_id — это то, что реально есть в сессии
     cur.execute("SELECT name, is_admin FROM players WHERE id = ?", (player_id,))
     row = cur.fetchone()
 
     if not row:
         conn.close()
-        return jsonify({'error': 'Игрок не найден'}), 404
+        # Тут можно даже логировать: "Сессия есть, но игрока с таким ID нет в БД"
+        return jsonify({'error': 'Игрок не найден в базе'}), 404
 
     sender_name = row['name']
     is_admin = bool(row['is_admin'])
@@ -416,14 +424,13 @@ def api_chat_send():
         if result.get('is_command_result'):
             response_message = result.get('success') and result.get('message') or result.get('error')
 
-            conn.close()  # Закрываем соединение ДО возврата
+            conn.close()
             return jsonify({
                 'success': True,
                 'message': response_message,
                 'is_command': True
             })
 
-    # Обычное сообщение в чат (соединение ещё открыто)
     try:
         cur.execute('''
             INSERT INTO chat_messages (player_name, message, type)

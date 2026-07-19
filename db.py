@@ -1,21 +1,29 @@
-# db.py (лучше переименовать из общего файла, чтобы не конфликтовало)
 import sqlite3
 import os
 import json
 
-DATA_DIR = '/data'
+# На Amvera нельзя писать в /data. Используем текущую папку проекта.
+DATA_DIR = '.'
 DB_FILE = os.path.join(DATA_DIR, 'game.db')
 
+# Создаём папку, если её вдруг нет (на Amvera обычно уже есть)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def get_db():
-    """Возвращает соединение с БД. Создаёт таблицу players, если её нет."""
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row  # Чтобы обращаться к колонкам по имени
-    conn.row_factory = sqlite3.Row      
-    cursor = conn.cursor()
+    """
+    Возвращает соединение с БД.
+    timeout=10 критически важен для SQLite при работе через Gunicorn (Amvera).
+    """
+    conn = sqlite3.connect(DB_FILE, timeout=10)  # <-- главное исправление
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    # Создаём таблицу с нужными колонками и без лишнего stats_json
+
+def create_table():
+    # Эта функция нужна только для ручного запуска, если миграции не работают.
+    # В основном сценарии миграции делаются в server.py (migrate_db).
+    conn = get_db()
+    cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS players (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,11 +50,7 @@ def get_db():
         )
     ''')
     conn.commit()
-    return conn
-
-
-def create_table():
-    get_db()
+    conn.close()
 
 
 def register_player(name, cls, base_stats):
@@ -64,13 +68,11 @@ def register_player(name, cls, base_stats):
         if cursor.fetchone():
             return None  # Ник занят
 
-        # Начальные статы
         base_attack = base_stats.get("base_attack", 10)
         base_defense = base_stats.get("base_defense", 5)
         max_hp = 100
         current_hp = max_hp
 
-        # Инвентарь и экипировка — пустые структуры
         inventory_str = json.dumps([])
         equipment_str = json.dumps({"weapon": None, "armor": None})
 
@@ -102,5 +104,8 @@ def register_player(name, cls, base_stats):
             "equipment": {"weapon": None, "armor": None},
         }
     except Exception as e:
-        print(f"DB Error: {e}")
+        # Лучше логировать через logging, а не print, чтобы видеть в логах Amvera
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"DB Error in register_player: {e}", exc_info=True)
         return None
