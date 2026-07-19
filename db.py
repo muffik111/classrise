@@ -1,29 +1,40 @@
-import sqlite3
 import os
+import sqlite3
 import json
-from server import DB_FILE
+import logging
 
+logger = logging.getLogger(__name__)
 
-# На Amvera нельзя писать в /data. Используем текущую папку проекта.
-DATA_DIR = '.'
-DB_FILE = os.path.join(DATA_DIR, 'game.db')
-
-# Создаём папку, если её вдруг нет (на Amvera обычно уже есть)
-os.makedirs(DATA_DIR, exist_ok=True)
-
-def get_db():
+def get_db(db_path=None):
     """
     Возвращает соединение с БД.
+    Если db_path не передан, определяет путь автоматически (для Amvera и локально).
     timeout=10 критически важен для SQLite при работе через Gunicorn (Amvera).
     """
-    conn = sqlite3.connect(DB_FILE, timeout=10)  # <-- главное исправление
+    if db_path is None:
+        if "AMVERA" in os.environ:
+            data_dir = "/data"
+        else:
+            data_dir = "."
+        db_path = os.path.join(data_dir, "game.db")
+
+    # Создаём папку, если её нет (на Amvera /data может не существовать при первом запуске)
+    data_dir = os.path.dirname(db_path)
+    if data_dir and data_dir != ".":
+        os.makedirs(data_dir, exist_ok=True)
+
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def create_table():
-    # Эта функция нужна только для ручного запуска, если миграции не работают.
-    # В основном сценарии миграции делаются в server.py (migrate_db).
+    """
+    Создаёт таблицу players, если её нет.
+    Эта функция нужна только для ручного теста.
+    В основном сценарии миграции делаются в server.py (migrate_db).
+    """
+    logger.info("Создание таблицы players (ручная функция)...")
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute('''
@@ -53,20 +64,21 @@ def create_table():
     ''')
     conn.commit()
     conn.close()
+    logger.info("Таблица players готова.")
 
 
 def register_player(name, cls, base_stats):
     """
-    Регистрирует игрока.
-    base_stats: dict с base_attack, base_defense (или можно считать по классу).
-    Возвращает данные игрока или None, если ник занят.
+    Регистрирует игрока по НИКУ.
+    Не требует user_id.
+    Возвращает данные игрока со своим id или None, если ник занят.
     """
     try:
         conn = get_db()
         cursor = conn.cursor()
 
-        # Проверяем, есть ли такой ник
-        cursor.execute("SELECT * FROM players WHERE name = ?", (name,))
+        # Проверка: занят ли ник
+        cursor.execute("SELECT id FROM players WHERE name = ?", (name,))
         if cursor.fetchone():
             return None  # Ник занят
 
@@ -92,7 +104,11 @@ def register_player(name, cls, base_stats):
 
         conn.commit()
 
+        # 🔥 Получаем ID только что созданного игрока
+        player_id = cursor.lastrowid
+
         return {
+            "id": player_id,              # <-- Обязательно для чата!
             "name": name,
             "class": cls,
             "level": 1,
@@ -106,8 +122,5 @@ def register_player(name, cls, base_stats):
             "equipment": {"weapon": None, "armor": None},
         }
     except Exception as e:
-        # Лучше логировать через logging, а не print, чтобы видеть в логах Amvera
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"DB Error in register_player: {e}", exc_info=True)
         return None

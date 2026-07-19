@@ -7,7 +7,7 @@ import sqlite3
 from flask import Flask, request, send_from_directory, render_template, jsonify, session, g
 
 # Импорты твоего проекта
-from db import get_db
+from db import get_db(DB_FILE)
 from items import ITEMS_DB, calc_stats
 from classes import get_class_stats, class_stats  # важно: должен быть class_stats
 
@@ -33,7 +33,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amve
 def migrate_db():
     logger.info("Запуск миграций БД...")
     try:
-        conn = get_db()
+        conn = get_db(DB_FILE)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -105,7 +105,7 @@ except Exception as e:
 def load_user():
     g.user = None
     if 'user_id' in session:
-        conn = get_db()
+        conn = get_db(DB_FILE)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute("SELECT id, name, is_admin FROM players WHERE id = ?", (session['user_id'],))
@@ -152,7 +152,7 @@ def login():
     if not name:
         return jsonify({'error': 'Имя обязательно'}), 400
 
-    conn = get_db()
+    conn = get_db(DB_FILE)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
@@ -219,37 +219,15 @@ def create_hero():
         allowed = list(class_stats.keys())
         return jsonify({"error": "Недопустимый класс", "allowed": allowed}), 400
 
-    conn = get_db()
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    # 🔥 Вызываем функцию из db.py — она сама проверит ник и вернёт id
+    player_data = register_player(name, cls, stats)
 
-    cur.execute("SELECT id FROM players WHERE user_id = ?", (g.user['id'],))
-    if cur.fetchone():
-        conn.close()
-        return jsonify({"error": "У вас уже есть персонаж"}), 409
-
-    cur.execute("SELECT id FROM players WHERE name = ?", (name,))
-    if cur.fetchone():
-        conn.close()
+    if player_data is None:
+        # register_player вернул None, значит ник занят
         return jsonify({"error": "Ник уже занят"}), 409
 
-    cur.execute('''
-        INSERT INTO players (name, class, attack, defense, max_hp, current_hp, inventory_json, equipment_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        name, cls, stats['attack'], stats['defense'], 100, 100, '[]', '{"weapon": null, "armor": null}'
-    ))
-    conn.commit()
-    conn.close()
-
-    player = {
-        "name": name, "class": cls, "level": 1, "aden": 0, "exp": 0,
-        "next_level_exp": 100, "current_hp": 100, "max_hp": 100,
-        "attack": stats['attack'], "defense": stats['defense'],
-        "inventory": [], "equipment": {"weapon": None, "armor": None},
-    }
-    return jsonify(player), 201
-
+    # Теперь в player_data есть поле "id" — чат сможет его использовать
+    return jsonify(player_data), 201
 
 @app.route('/status', methods=['POST'])
 @login_required
@@ -264,7 +242,7 @@ def status():
         else:
             return jsonify({"error": "player_id обязателен"}), 400
 
-    conn = get_db()
+    conn = get_db(DB_FILE)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     # ИЩЕМ ПО ID, а не по имени
@@ -321,7 +299,7 @@ def handle_give_command(parts, admin_name):
     target_name = parts[2]
     mode = parts[3].lower()
 
-    conn = get_db()
+    conn = get_db(DB_FILE)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
@@ -422,7 +400,7 @@ def api_chat_send():
         # Это почти невозможно при работающей сессии, но на всякий случай
         return jsonify({'error': 'Не удалось определить игрока'}), 401
 
-    conn = get_db()
+    conn = get_db(DB_FILE)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
@@ -485,7 +463,7 @@ def api_chat_history():
     if limit < 1 or limit > 200:
         limit = 50
 
-    conn = get_db()
+    conn = get_db(DB_FILE)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     # ORDER BY id DESC — самые свежие сверху
