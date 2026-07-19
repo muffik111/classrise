@@ -7,7 +7,7 @@ import sqlite3
 from flask import Flask, request, send_from_directory, render_template, jsonify, session, g
 
 # Импорты твоего проекта
-from db import get_db(DB_FILE)
+from db import get_db
 from items import ITEMS_DB, calc_stats
 from classes import get_class_stats, class_stats  # важно: должен быть class_stats
 
