@@ -143,10 +143,11 @@
         
         // Обработка ошибок авторизации
         if (res.status === 401) {
-          addChatMessage('СИСТЕМА', 'Сессия истекла! Вас перенаправляет на экран входа...', true);
-          setTimeout(() => window.location.href = '/login', 1500);
-          return null;
-        }
+  addChatMessage('СИСТЕМА', 'Сессия истекла! Перенаправление на вход...', true);
+  setTimeout(() => window.location.href = '/login-page', 1500);
+  return null;
+}
+}
 
         if (!res.ok) {
           throw new Error(`Ошибка сервера: ${res.status}`);

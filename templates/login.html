@@ -2,57 +2,45 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>Вход в RPG</title>
+  <title>ClassRise — Вход</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 400px; margin: 40px auto; padding: 0 15px; }
-    input, button { padding: 8px; width: 100%; box-sizing: border-box; margin-bottom: 12px; }
-    button { background: #3498db; color: white; border: none; cursor: pointer; }
-    .error { color: red; }
+    body { font-family: 'Courier New', Courier, monospace; max-width: 400px; margin: 50px auto; padding: 0 15px; background: #121212; color: #e0e0e0; }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; color: #aaa; }
+    input { width: 100%; padding: 8px; box-sizing: border-box; background: #000; color: #fff; border: 1px solid #555; }
+    button { padding: 10px 20px; background: #3498db; color: white; border: none; cursor: pointer; font-family: inherit; }
+    button:hover { background: #2980b9; }
+    a { color: #55aaff; text-decoration: none; }
+    .error { color: #ff5555; margin-top: 10px; }
   </style>
 </head>
 <body>
-  <h2>Вход в игру</h2>
-  <input id="name" type="text" placeholder="Никнейм" />
-  <button onclick="login()">Войти</button>
-  <p id="msg" class="error"></p>
+  <h1 style="color: #ffd700;">ClassRise: Вход</h1>
+  <div class="form-group">
+    <label>Имя персонажа (для входа)</label>
+    <input type="text" id="playerName" placeholder="Введите имя существующего игрока" />
+  </div>
+  <button onclick="doLogin()">Войти</button>
+  <p style="margin-top:20px;">Нет аккаунта? <a href="/register-page">Регистрация</a></p>
 
   <script>
-    async function login() {
-      const name = document.getElementById('name').value.trim();
-      const msgEl = document.getElementById('msg');
-      msgEl.textContent = '';
+    async function doLogin() {
+      const name = document.getElementById('playerName').value.trim();
+      if (!name) return alert('Введите имя');
 
-      if (!name) return (msgEl.textContent = 'Введите ник');
+      const res = await fetch('/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name})
+      });
 
-      try {
-        const res = await fetch('/login', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({name})
-        });
-
+      if (res.ok) {
         const data = await res.json();
-
-        if (!res.ok || data.error) {
-          msgEl.textContent = data.error || 'Ошибка входа';
-          return;
-        }
-
-        // ГЛАВНОЕ: мы не делаем редирект через HTTP.
-        // Мы открываем game.html через JS и передаём туда данные игрока.
-        const gameWindow = window.open('game.html', '_self');
-        
-        // Небольшая задержка, чтобы game.html успел загрузиться и объявить window.initGame
-        setTimeout(() => {
-          if (gameWindow && !gameWindow.closed) {
-            gameWindow.initGame(data);
-          } else {
-            alert('Не удалось открыть игровой экран. Попробуйте обновить страницу.');
-          }
-        }, 200);
-
-      } catch (e) {
-        msgEl.textContent = 'Ошибка сети: ' + e.message;
+        alert('Успешный вход! Перехожу в игру...');
+        window.location.href = '/';
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Ошибка входа');
       }
     }
   </script>
