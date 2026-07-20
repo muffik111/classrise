@@ -101,7 +101,7 @@ def login_required(f):
 def register():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
-    p_class = (data.get('class') or '').strip()
+    p_class = (data.get('class') or '').strip()  # именно 'class', как в JSON
 
     if not name or not p_class:
         return jsonify({"error": "Имя и класс обязательны"}), 400
@@ -109,7 +109,6 @@ def register():
     conn = get_db()
     cur = conn.cursor()
     try:
-        # Если get_class_stats недоступен — используем дефолт
         stats = {}
         try:
             stats = get_class_stats(p_class) or {}
@@ -125,6 +124,7 @@ def register():
         session['player_id'] = player_id
         return jsonify({"ok": True, "player_id": player_id, "name": name, "class": p_class})
     except sqlite3.IntegrityError:
+        conn.rollback()
         return jsonify({"error": "Игрок с таким именем уже существует"}), 409
     finally:
         conn.close()
@@ -286,7 +286,22 @@ def fight():
     }
     return jsonify(result)
 
-# Главная страница — теперь правильно отдаёт из templates
 @app.route('/')
 def index():
     return render_template('game.html')
+
+@app.route('/login-page')
+def login_page():
+    # Если уже залогинен — сразу в игру
+    if 'player_id' in session:
+        return render_template('game.html')
+    return render_template('login.html')
+
+@app.route('/register-page')
+def register_page():
+    # Если уже залогинен — сразу в игру
+    if 'player_id' in session:
+        return render_template('game.html')
+    return render_template('register.html')
+
+

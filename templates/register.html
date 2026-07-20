@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>ClassRise — Регистрация</title>
+  <style>
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      max-width: 450px;
+      margin: 50px auto;
+      padding: 0 15px;
+      background: #121212;
+      color: #e0e0e0;
+    }
+    h1 { color: #ffd700; text-align: center; }
+    .form-group { margin-bottom: 15px; }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      color: #aaa;
+      font-size: 0.95em;
+    }
+    input, select {
+      width: 100%;
+      padding: 8px;
+      box-sizing: border-box;
+      background: #000;
+      color: #fff;
+      border: 1px solid #555;
+      font-family: inherit;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #3498db;
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    button:hover { background: #2980b9; }
+    a { color: #55aaff; text-decoration: none; }
+    .error { color: #ff5555; margin-top: 10px; font-size: 0.9em; }
+    .hint { color: #666; font-size: 0.85em; margin-top: 4px; }
+  </style>
+</head>
+<body>
+
+  <h1>ClassRise: Регистрация</h1>
+
+  <div class="form-group">
+    <label for="playerName">Имя персонажа</label>
+    <input type="text" id="playerName" placeholder="Например: DarkWarrior" maxlength="20" />
+    <div class="hint">Только латинские буквы и цифры, без пробелов.</div>
+  </div>
+
+  <div class="form-group">
+    <label for="playerClass">Класс</label>
+    <select id="playerClass">
+      <option value="warrior">Воин (Warrior)</option>
+      <option value="knight">Рыцарь (Knight)</option>
+      <option value="mage">Маг (Mage)</option>
+      <option value="archer">Лучник (Archer)</option>
+      <!-- Сюда можно добавить ещё классы, если есть в classes.py -->
+    </select>
+    <div class="hint">Класс влияет на начальные ATK/DEF (берётся из classes.py).</div>
+  </div>
+
+  <button onclick="doRegister()">Создать персонажа</button>
+
+  <p style="margin-top:20px; text-align:center;">
+    Уже есть аккаунт? <a href="/login-page">Войти</a>
+  </p>
+
+  <div id="msgBox" class="error" style="display:none;"></div>
+
+  <script>
+    async function doRegister() {
+      const nameEl = document.getElementById('playerName');
+      const classEl = document.getElementById('playerClass');
+      const msgBox = document.getElementById('msgBox');
+
+      const name = (nameEl.value || '').trim();
+      const pClass = (classEl.value || '').trim();
+
+      if (!name) {
+        showMsg('Введите имя персонажа.', true);
+        return;
+      }
+      if (name.length < 3 || name.length > 20) {
+        showMsg('Имя должно быть от 3 до 20 символов.', true);
+        return;
+      }
+      // Простая проверка на пробелы и спецсимволы
+      if (/[^A-Za-z0-9]/.test(name)) {
+        showMsg('Используйте только латинские буквы и цифры.', true);
+        return;
+      }
+
+      msgBox.style.display = 'block';
+      msgBox.textContent = 'Отправка данных...';
+
+      try {
+        const res = await fetch('/register', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name, class: pClass})
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (res.ok) {
+          alert('Персонаж создан! Переход в игру...');
+          window.location.href = '/';
+        } else {
+          const err = data.error || 'Неизвестная ошибка регистрации';
+          showMsg(err, true);
+          console.error('Register error:', err);
+        }
+      } catch (e) {
+        console.error(e);
+        showMsg('Ошибка соединения с сервером.', true);
+      }
+    }
+
+    function showMsg(text, isError) {
+      const box = document.getElementById('msgBox');
+      box.textContent = text;
+      box.style.color = isError ? '#ff5555' : '#55ff55';
+      box.style.display = 'block';
+    }
+  </script>
+</body>
+</html>
