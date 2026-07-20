@@ -20,7 +20,7 @@
     .error { color: #ff5555; font-weight: bold; }
     .success { color: #55ff55; }
 
-    /* Стили чата (Lineage 2 Interlude style) */
+    /* Стили чата */
     #chat-panel {
       margin-top: 24px;
       padding: 10px;
@@ -43,7 +43,7 @@
     .chat-sender-sys { color: #aaa; }
     .chat-sender-player { color: #ddd; }
     .chat-text { color: #fff; }
-    .chat-system-msg { color: #ffff00; } /* Системные сообщения жёлтым */
+    .chat-system-msg { color: #ffff00; }
   </style>
 </head>
 <body>
@@ -77,7 +77,7 @@
     </table>
   </div>
 
-  <!-- Экипировка (заглушка, требует доработки в server.py) -->
+  <!-- Экипировка -->
   <div class="section">
     <h3>Экипировка</h3>
     <p><span class="error">Внимание:</span> Эта механика требует доработки БД. Сейчас только интерфейс.</p>
@@ -106,7 +106,7 @@
     // --- ИНИЦИАЛИЗАЦИЯ ПРИ ЗАГРУЗКЕ ---
     document.addEventListener('DOMContentLoaded', () => {
       console.log("Загрузка game.html...");
-      loadStatus(); // Пытаемся сразу получить статус. Если сессии нет - получим ошибку 401
+      loadStatus(); 
       loadChatMessages();
       loadShop();
     });
@@ -118,7 +118,7 @@
       const prefix = isSystem ? '[СИСТЕМА]' : `[${sender}]`;
       const colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
       
-      // Защита от XSS (очень базовая)
+      // Защита от XSS
       const safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
       const div = document.createElement('div');
@@ -141,13 +141,12 @@
       try {
         const res = await fetch(endpoint, options);
         
-        // Обработка ошибок авторизации
+        // ИСПРАВЛЕНО: корректная обработка 401
         if (res.status === 401) {
-  addChatMessage('СИСТЕМА', 'Сессия истекла! Перенаправление на вход...', true);
-  setTimeout(() => window.location.href = '/login-page', 1500);
-  return null;
-}
-}
+          addChatMessage('СИСТЕМА', 'Сессия истекла! Перенаправление на вход...', true);
+          setTimeout(() => window.location.href = '/login-page', 1500);
+          return null;
+        }
 
         if (!res.ok) {
           throw new Error(`Ошибка сервера: ${res.status}`);
@@ -168,9 +167,9 @@
       
       const data = await apiRequest('/player-status');
 
-      if (!data) return; // Если была ошибка (401 и редирект), выходим
+      if (!data) return; 
 
-      currentPlayer = data; // Сохраняем данные игрока глобально
+      currentPlayer = data; 
 
       let html = `
         <p><b>Имя:</b> ${data.name} | <b>Класс:</b> ${data.class} | <b>Ур:</b> ${data.level}</p>
@@ -195,7 +194,8 @@
         return;
       }
 
-      const result = await apiRequest('/fight', 'POST', { player_id: currentPlayer.id }); // player_id нужен для логики, но сервер проверит сессию
+      // ИСПРАВЛЕНО: отправляем char_id, так как в БД у нас персонажи
+      const result = await apiRequest('/fight', 'POST', { char_id: currentPlayer.char_id });
 
       if (!result) return;
 
@@ -206,7 +206,6 @@
 
       log.innerHTML = msg;
       
-      // Сразу обновляем статус, чтобы видеть новые HP
       setTimeout(loadStatus, 500); 
     }
 
@@ -220,8 +219,8 @@
     async function sendChat() {
       const text = chatInput.value.trim();
       if (!text) return;
-      if (!currentPlayer) {
-        addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
+      if (!currentPlayer || !currentPlayer.char_id) {
+        addChatMessage('СИСТЕМА', 'Сначала войдите в игру и дождитесь загрузки статуса!', true);
         return;
       }
 
@@ -229,19 +228,22 @@
       chatInput.disabled = true;
 
       try {
-        // ВАЖНО: Не передаем player_id! Сервер сам знает, кто ты, по сессии.
+        // ОТПРАВЛЯЕМ char_id явно, чтобы сервер мог сохранить в БД chat_messages
         const res = await fetch('/chat-send', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ message: text })
+          body: JSON.stringify({ 
+            char_id: currentPlayer.char_id, 
+            text: text 
+          })
         });
 
         if (res.ok) {
           chatInput.value = '';
-          loadChatMessages(); // Обновляем чат
+          loadChatMessages(); 
         } else {
           const err = await res.json().catch(() => ({}));
-          addChatMessage('СИСТЕМА', err.error || 'Не удалось отправить', true);
+          addChatMessage('СИСТЕМА', err.error || 'Не удалось отправить сообщение', true);
         }
       } catch (e) {
         addChatMessage('СИСТЕМА', 'Ошибка сети', true);
@@ -252,13 +254,18 @@
     }
 
     async function loadChatMessages() {
+      // Получаем историю. Если роута нет, будет ошибка, которую покажет addChatMessage
       const data = await apiRequest('/chat-history?limit=30');
-      if (!data || !Array.isArray(data)) return;
+      
+      if (!data || !Array.isArray(data)) {
+        return;
+      }
 
       chatMessagesBox.innerHTML = '';
       data.forEach(msg => {
-        // Ожидаем формат: { id, player_name, text } или { id, name, message }
-        const sender = msg.player_name || msg.name || 'Unknown';
+        // Ожидаем формат из БД: { id, char_id, text, created_at } и отдельный запрос на имя, 
+        // НО для простоты фронтенд ожидает, что бэкенд вернёт уже готовые данные: { name, text }
+        const sender = msg.name || msg.sender || 'Unknown';
         const text = msg.text || msg.message || '';
         addChatMessage(sender, text, false);
       });

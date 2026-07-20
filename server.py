@@ -4,6 +4,8 @@ from functools import wraps
 import sqlite3
 from flask import Flask, request, jsonify, session, render_template
 from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+
 
 
 # --- МАРКЕР ВЕРСИИ (чтобы видеть в логах Amvera, что код обновился) ---
@@ -265,24 +267,36 @@ def chat_history():
     return jsonify(messages)
 
 @app.route('/chat-send', methods=['POST'])
-@login_required
 def chat_send():
     data = request.get_json() or {}
-    text = (data.get('message') or '').strip()
-    if not text:
-        return jsonify({"error": "Пустое сообщение"}), 400
+    char_id = data.get('char_id')
+    text = (data.get('text') or '').strip()
 
-    player_id = session.get('player_id')
+    # Простая валидация
+    if not char_id or not text:
+        return jsonify({"error": "Некорректные данные"}), 400
+    if len(text) > 250:
+        return jsonify({"error": "Сообщение слишком длинное"}), 400
+
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute('INSERT INTO chat_messages (player_id, text) VALUES (?, ?)', (player_id, text))
+        # Вставляем сообщение в БД
+        cur.execute('''
+            INSERT INTO chat_messages (char_id, text)
+            VALUES (?, ?)
+        ''', (char_id, text))
         conn.commit()
-        return jsonify({"ok": True})
+
+        # Опционально: можно сразу вернуть данные для фронтенда
+        return jsonify({
+            "ok": True,
+            "message": "Отправлено"
+        }), 200
     except Exception as e:
         conn.rollback()
-        logger.error(f"Ошибка чата: {e}")
-        return jsonify({"error": str(e)}), 500
+        print("Chat send error:", e)
+        return jsonify({"error": "Ошибка сохранения сообщения"}), 500
     finally:
         conn.close()
 
