@@ -4,43 +4,125 @@
   <meta charset="UTF-8" />
   <title>ClassRise — Вход</title>
   <style>
-    body { font-family: 'Courier New', Courier, monospace; max-width: 400px; margin: 50px auto; padding: 0 15px; background: #121212; color: #e0e0e0; }
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      max-width: 400px;
+      margin: 50px auto;
+      padding: 0 15px;
+      background: #121212;
+      color: #e0e0e0;
+    }
     .form-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 5px; color: #aaa; }
-    input { width: 100%; padding: 8px; box-sizing: border-box; background: #000; color: #fff; border: 1px solid #555; }
-    button { padding: 10px 20px; background: #3498db; color: white; border: none; cursor: pointer; font-family: inherit; }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      color: #aaa;
+      font-size: 0.95em;
+    }
+    input {
+      width: 100%;
+      padding: 8px;
+      box-sizing: border-box;
+      background: #000;
+      color: #fff;
+      border: 1px solid #555;
+      outline: none;
+    }
+    input:focus { border-color: #3498db; }
+    button {
+      padding: 10px 20px;
+      background: #3498db;
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      width: 100%;
+    }
     button:hover { background: #2980b9; }
     a { color: #55aaff; text-decoration: none; }
-    .error { color: #ff5555; margin-top: 10px; }
+    .error {
+      color: #ff5555;
+      margin-top: 10px;
+      font-weight: bold;
+      text-align: center;
+    }
+    .success {
+      color: #55ff55;
+      margin-top: 10px;
+      font-weight: bold;
+      text-align: center;
+    }
+    h1 { color: #ffd700; margin-bottom: 25px; text-align: center; }
   </style>
 </head>
 <body>
-  <h1 style="color: #ffd700;">ClassRise: Вход</h1>
+  <h1>ClassRise: Вход</h1>
+
   <div class="form-group">
-    <label>Имя персонажа (для входа)</label>
-    <input type="text" id="playerName" placeholder="Введите имя существующего игрока" />
+    <label>Логин (аккаунт)</label>
+    <input type="text" id="loginUsername" placeholder="Ваш логин" />
   </div>
+
+  <div class="form-group">
+    <label>Пароль</label>
+    <input type="password" id="loginPassword" placeholder="Пароль" />
+  </div>
+
   <button onclick="doLogin()">Войти</button>
-  <p style="margin-top:20px;">Нет аккаунта? <a href="/register-page">Регистрация</a></p>
+
+  <p style="margin-top:20px; text-align:center;">
+    Нет аккаунта? <a href="/register-page">Регистрация</a>
+  </p>
+
+  <div id="msgBox" class="error" style="display:none;"></div>
 
   <script>
     async function doLogin() {
-      const name = document.getElementById('playerName').value.trim();
-      if (!name) return alert('Введите имя');
+      const username = document.getElementById('loginUsername').value.trim();
+      const password = document.getElementById('loginPassword').value.trim();
+      const msgBox = document.getElementById('msgBox');
 
-      const res = await fetch('/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name})
-      });
+      // Сброс сообщения
+      msgBox.style.display = 'none';
+      msgBox.className = 'error';
 
-      if (res.ok) {
-        const data = await res.json();
-        alert('Успешный вход! Перехожу в игру...');
-        window.location.href = '/';
+      if (!username || !password) {
+        showMsg('Введите логин и пароль', true);
+        return;
+      }
+
+      try {
+        const res = await fetch('/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ username, password })
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (res.ok) {
+          showMsg('Успешный вход! Переход в игру...', false);
+          setTimeout(() => {
+            window.location.href = '/';
+          }, 1000);
+        } else {
+          const errorText = data.error || 'Ошибка входа (неверный логин или пароль)';
+          showMsg(errorText, true);
+        }
+      } catch (e) {
+        console.error(e);
+        showMsg('Ошибка соединения с сервером', true);
+      }
+    }
+
+    function showMsg(text, isError) {
+      const box = document.getElementById('msgBox');
+      box.textContent = text;
+      box.style.display = 'block';
+      if (isError) {
+        box.className = 'error';
       } else {
-        const err = await res.json().catch(() => ({}));
-        alert(err.error || 'Ошибка входа');
+        box.className = 'success';
       }
     }
   </script>

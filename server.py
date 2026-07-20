@@ -3,6 +3,8 @@ import logging
 from functools import wraps
 import sqlite3
 from flask import Flask, request, jsonify, session, render_template
+from werkzeug.security import generate_password_hash, check_password_hash
+
 
 # --- МАРКЕР ВЕРСИИ (чтобы видеть в логах Amvera, что код обновился) ---
 print("=== VERSION: 2026-07-21-FIX-405 ===")
@@ -40,28 +42,41 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.executescript('''
-        CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            class TEXT NOT NULL,
-            level INTEGER DEFAULT 1,
-            adenas INTEGER DEFAULT 0,
-            exp INTEGER DEFAULT 0,
-            next_level_exp INTEGER DEFAULT 100,
-            current_hp INTEGER DEFAULT 50,
-            max_hp INTEGER DEFAULT 50,
-            attack INTEGER DEFAULT 5,
-            defense INTEGER DEFAULT 3,
-            inventory TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            player_id INTEGER NOT NULL,
-            text TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (player_id) REFERENCES players(id)
-        );
-    ''')
+    -- Таблица аккаунтов (логин + пароль)
+    CREATE TABLE IF NOT EXISTS accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        is_active INTEGER DEFAULT 1
+    );
+
+    -- Таблица персонажей (один аккаунт -> много персонажей)
+    CREATE TABLE IF NOT EXISTS characters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL,
+        name TEXT NOT NULL UNIQUE,
+        class TEXT NOT NULL,
+        level INTEGER DEFAULT 1,
+        adenas INTEGER DEFAULT 0,
+        exp INTEGER DEFAULT 0,
+        next_level_exp INTEGER DEFAULT 100,
+        current_hp INTEGER DEFAULT 50,
+        max_hp INTEGER DEFAULT 50,
+        attack INTEGER DEFAULT 5,
+        defense INTEGER DEFAULT 3,
+        inventory TEXT DEFAULT '',
+        FOREIGN KEY (account_id) REFERENCES accounts(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        char_id INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (char_id) REFERENCES characters(id)
+    );
+''')
+
     conn.commit()
     conn.close()
     logger.info("[INIT] Таблицы готовы.")
@@ -113,37 +128,27 @@ def register_page():
 # API РОУТЫ (ТОЛЬКО POST, РАБОТАЮТ С ДАННЫМИ)
 # ==========================================
 
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json() or {}
-    name = (data.get('name') or '').strip()
-    if not name:
-        return jsonify({"error": "Введите имя"}), 400
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('SELECT id FROM players WHERE name = ?', (name,))
-    row = cur.fetchone()
-    conn.close()
-
-    if row:
-        session['player_id'] = row['id']
-        return jsonify({"ok": True, "player_id": row['id'], "name": name})
-    else:
-        return jsonify({"error": "Игрок не найден"}), 404
-
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json() or {}
-    name = (data.get('name') or '').strip()
-    p_class = (data.get('class') or '').strip()  # JSON поле 'class'
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
+    char_name = (data.get('char_name') or '').strip()
+    p_class = (data.get('class') or '').strip()
 
-    if not name or not p_class:
-        return jsonify({"error": "Имя и класс обязательны"}), 400
+    if not username or not password or not char_name or not p_class:
+        return jsonify({"error": "Все поля обязательны"}), 400
 
     conn = get_db()
     cur = conn.cursor()
     try:
+        # 1. Создаём аккаунт
+        pwd_hash = generate_password_hash(password)
+        cur.execute('INSERT INTO accounts (username, password_hash) VALUES (?, ?)',
+                    (username, pwd_hash))
+        account_id = cur.lastrowid
+
+        # 2. Создаём персонажа, привязанного к аккаунту
         stats = {}
         try:
             stats = get_class_stats(p_class) or {}
@@ -151,18 +156,67 @@ def register():
             pass
 
         cur.execute('''
-            INSERT INTO players (name, class, attack, defense)
-            VALUES (?, ?, ?, ?)
-        ''', (name, p_class, stats.get("attack", 5), stats.get("defense", 3)))
-        player_id = cur.lastrowid
+            INSERT INTO characters (account_id, name, class, attack, defense)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (account_id, char_name, p_class, stats.get("attack", 5), stats.get("defense", 3)))
+
         conn.commit()
-        session['player_id'] = player_id
-        return jsonify({"ok": True, "player_id": player_id, "name": name, "class": p_class})
-    except sqlite3.IntegrityError:
+        return jsonify({"ok": True, "message": "Аккаунт и персонаж созданы"})
+
+    except sqlite3.IntegrityError as e:
         conn.rollback()
-        return jsonify({"error": "Игрок с таким именем уже существует"}), 409
+        if 'username' in str(e).lower():
+            return jsonify({"error": "Такой логин уже занят"}), 409
+        if 'name' in str(e).lower():
+            return jsonify({"error": "Такое имя персонажа уже занято"}), 409
+        return jsonify({"error": "Ошибка регистрации"}), 500
     finally:
         conn.close()
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = (data.get('password') or '').strip()
+
+    if not username or not password:
+        return jsonify({"error": "Введите логин и пароль"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Ищем аккаунт
+    cur.execute('SELECT id, password_hash FROM accounts WHERE username = ? AND is_active = 1', (username,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({"error": "Неверный логин или пароль"}), 401
+
+    account_id, stored_hash = row
+
+    # Проверяем пароль
+    if not check_password_hash(stored_hash, password):
+        return jsonify({"error": "Неверный логин или пароль"}), 401
+
+    # Находим первого персонажа этого аккаунта (можно позже сделать выбор персонажа)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM characters WHERE account_id = ? LIMIT 1', (account_id,))
+    char_row = cur.fetchone()
+    conn.close()
+
+    if not char_row:
+        return jsonify({"error": "У аккаунта нет персонажей"}), 404
+
+    char_id = char_row['id']
+
+    # Сохраняем в сессию: account_id (для безопасности) и char_id (для игры)
+    session['account_id'] = account_id
+    session['char_id'] = char_id
+
+    return jsonify({"ok": True, "char_id": char_id})
 
 @app.route('/player-status')
 @login_required

@@ -13,7 +13,7 @@
       color: #e0e0e0;
     }
     h1 { color: #ffd700; text-align: center; }
-    .form-group { margin-bottom: 15px; }
+    .form-group { margin-bottom: 18px; }
     label {
       display: block;
       margin-bottom: 6px;
@@ -29,6 +29,7 @@
       border: 1px solid #555;
       font-family: inherit;
     }
+    input:focus { border-color: #3498db; }
     button {
       width: 100%;
       padding: 12px;
@@ -43,6 +44,7 @@
     button:hover { background: #2980b9; }
     a { color: #55aaff; text-decoration: none; }
     .error { color: #ff5555; margin-top: 10px; font-size: 0.9em; }
+    .success { color: #55ff55; margin-top: 10px; font-size: 0.9em; }
     .hint { color: #666; font-size: 0.85em; margin-top: 4px; }
   </style>
 </head>
@@ -50,25 +52,40 @@
 
   <h1>ClassRise: Регистрация</h1>
 
+  <!-- Логин аккаунта -->
   <div class="form-group">
-    <label for="playerName">Имя персонажа</label>
-    <input type="text" id="playerName" placeholder="Например: DarkWarrior" maxlength="20" />
-    <div class="hint">Только латинские буквы и цифры, без пробелов.</div>
+    <label for="accUsername">Логин аккаунта</label>
+    <input type="text" id="accUsername" placeholder="Только латиница и цифры" maxlength="20" />
+    <div class="hint">Это ваш постоянный логин для входа в игру.</div>
   </div>
 
+  <!-- Пароль -->
   <div class="form-group">
-    <label for="playerClass">Класс</label>
-    <select id="playerClass">
+    <label for="accPassword">Пароль</label>
+    <input type="password" id="accPassword" placeholder="Минимум 6 символов" maxlength="64" />
+    <div class="hint">Пароль будет надёжно зашифрован на сервере.</div>
+  </div>
+
+  <!-- Имя персонажа -->
+  <div class="form-group">
+    <label for="charName">Имя персонажа</label>
+    <input type="text" id="charName" placeholder="Например: DarkWarrior" maxlength="20" />
+    <div class="hint">Один аккаунт может иметь нескольких персонажей (в будущем).</div>
+  </div>
+
+  <!-- Класс -->
+  <div class="form-group">
+    <label for="charClass">Класс</label>
+    <select id="charClass">
       <option value="warrior">Воин (Warrior)</option>
       <option value="knight">Рыцарь (Knight)</option>
       <option value="mage">Маг (Mage)</option>
       <option value="archer">Лучник (Archer)</option>
-      <!-- Сюда можно добавить ещё классы, если есть в classes.py -->
     </select>
     <div class="hint">Класс влияет на начальные ATK/DEF (берётся из classes.py).</div>
   </div>
 
-  <button onclick="doRegister()">Создать персонажа</button>
+  <button onclick="doRegister()">Создать аккаунт и персонажа</button>
 
   <p style="margin-top:20px; text-align:center;">
     Уже есть аккаунт? <a href="/login-page">Войти</a>
@@ -78,42 +95,73 @@
 
   <script>
     async function doRegister() {
-      const nameEl = document.getElementById('playerName');
-      const classEl = document.getElementById('playerClass');
+      const usernameEl = document.getElementById('accUsername');
+      const passwordEl = document.getElementById('accPassword');
+      const charNameEl = document.getElementById('charName');
+      const classEl = document.getElementById('charClass');
       const msgBox = document.getElementById('msgBox');
 
-      const name = (nameEl.value || '').trim();
+      // Сброс сообщения
+      msgBox.style.display = 'none';
+      msgBox.className = 'error';
+
+      const username = (usernameEl.value || '').trim();
+      const password = (passwordEl.value || '').trim();
+      const charName = (charNameEl.value || '').trim();
       const pClass = (classEl.value || '').trim();
 
-      if (!name) {
-        showMsg('Введите имя персонажа.', true);
+      // Валидация
+      if (!username || !password || !charName || !pClass) {
+        showMsg('Заполните все поля.', true);
         return;
       }
-      if (name.length < 3 || name.length > 20) {
-        showMsg('Имя должно быть от 3 до 20 символов.', true);
+
+      if (username.length < 3 || username.length > 20) {
+        showMsg('Логин должен быть от 3 до 20 символов.', true);
         return;
       }
-      // Простая проверка на пробелы и спецсимволы
-      if (/[^A-Za-z0-9]/.test(name)) {
-        showMsg('Используйте только латинские буквы и цифры.', true);
+      if (/[^A-Za-z0-9]/.test(username)) {
+        showMsg('Логин: только латинские буквы и цифры.', true);
+        return;
+      }
+
+      if (password.length < 6) {
+        showMsg('Пароль должен быть не менее 6 символов.', true);
+        return;
+      }
+
+      if (charName.length < 3 || charName.length > 20) {
+        showMsg('Имя персонажа должно быть от 3 до 20 символов.', true);
+        return;
+      }
+      if (/[^A-Za-z0-9]/.test(charName)) {
+        showMsg('Имя персонажа: только латинские буквы и цифры.', true);
         return;
       }
 
       msgBox.style.display = 'block';
-      msgBox.textContent = 'Отправка данных...';
+      msgBox.textContent = 'Регистрация...';
+      msgBox.className = 'success'; // делаем временно зелёным, чтобы было видно активность
 
       try {
         const res = await fetch('/register', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({name, class: pClass})
+          body: JSON.stringify({
+            username,
+            password,
+            char_name: charName,
+            class: pClass
+          })
         });
 
         const data = await res.json().catch(() => ({}));
 
         if (res.ok) {
-          alert('Персонаж создан! Переход в игру...');
-          window.location.href = '/';
+          showMsg('Аккаунт и персонаж созданы! Переход на вход...', false);
+          setTimeout(() => {
+            window.location.href = '/login-page';
+          }, 1500);
         } else {
           const err = data.error || 'Неизвестная ошибка регистрации';
           showMsg(err, true);
@@ -128,8 +176,8 @@
     function showMsg(text, isError) {
       const box = document.getElementById('msgBox');
       box.textContent = text;
-      box.style.color = isError ? '#ff5555' : '#55ff55';
       box.style.display = 'block';
+      box.className = isError ? 'error' : 'success';
     }
   </script>
 </body>
