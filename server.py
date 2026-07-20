@@ -2,16 +2,18 @@ import os
 import logging
 from functools import wraps
 import sqlite3
-from flask import Flask, request, jsonify, session, g, render_template
+from flask import Flask, request, jsonify, session, render_template
 
-# --- ЛОГИРОВАНИЕ ---
+# --- МАРКЕР ВЕРСИИ (чтобы видеть в логах Amvera, что код обновился) ---
+print("=== VERSION: 2026-07-21-FIX-405 ===")
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 logger.addHandler(handler)
 
-# --- ПУТЬ К БД (Amvera /data или локально) ---
+# --- ПУТЬ К БД ---
 data_dir = '/data'
 can_use_data = False
 
@@ -25,28 +27,22 @@ if os.path.exists(data_dir):
     except Exception:
         can_use_data = False
 
-if can_use_data:
-    DB_PATH = os.path.join(data_dir, 'game.db')
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DB_PATH = os.path.join(BASE_DIR, 'game.db')
+DB_PATH = os.path.join(data_dir, 'game.db') if can_use_data else os.path.join(os.path.dirname(os.path.abspath(__file__)), 'game.db')
+logger.info(f"[INFO] База данных: {DB_PATH}")
 
-logger.info(f"[INFO] База данных будет использоваться по пути: {DB_PATH}")
-
-# --- ФУНКЦИИ БД ---
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    logger.info("[INIT] Инициализация таблиц базы данных...")
+    logger.info("[INIT] Инициализация таблиц БД...")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.executescript('''
         CREATE TABLE IF NOT EXISTS players (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
+            name TEXT NOT NULL UNIQUE,
             class TEXT NOT NULL,
             level INTEGER DEFAULT 1,
             adenas INTEGER DEFAULT 0,
@@ -58,7 +54,6 @@ def init_db():
             defense INTEGER DEFAULT 3,
             inventory TEXT DEFAULT ''
         );
-
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             player_id INTEGER NOT NULL,
@@ -69,22 +64,19 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
-    logger.info("[INIT] Таблицы БД проверены/созданы.")
+    logger.info("[INIT] Таблицы готовы.")
 
 init_db()
 
-# --- СОЗДАНИЕ ПРИЛОЖЕНИЯ ---
 app = Flask(__name__, template_folder='templates')
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
-# --- ИМПОРТЫ ИГР. МОДУЛЕЙ ---
+# --- ИМПОРТЫ (если файлов нет, сервер запустится, но механики будут падать) ---
 try:
     from items import ITEMS_DB, calc_stats
     from classes import get_class_stats, class_stats
 except ImportError as e:
-    logger.error(f"Ошибка импорта игровых модулей: {e}")
-    # Если файлов нет — сервер запустится, но игровые механики будут падать.
-    # Для теста можно временно заглушить, но на Amvera эти файлы должны быть в репозитории.
+    logger.error(f"Warning: игровые модули не найдены: {e}")
 
 # --- ДЕКОРАТОР АВТОРИЗАЦИИ ---
 def login_required(f):
@@ -95,13 +87,56 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# --- РОУТЫ ---
+# ==========================================
+# РОУТЫ СТРАНИЦ (ТОЛЬКО GET, ОТДАЮТ HTML)
+# ==========================================
+
+@app.route('/')
+def index():
+    if 'player_id' not in session:
+        return render_template('login.html')
+    return render_template('game.html')
+
+@app.route('/login-page')
+def login_page():
+    if 'player_id' in session:
+        return render_template('game.html')
+    return render_template('login.html')
+
+@app.route('/register-page')
+def register_page():
+    if 'player_id' in session:
+        return render_template('game.html')
+    return render_template('register.html')
+
+# ==========================================
+# API РОУТЫ (ТОЛЬКО POST, РАБОТАЮТ С ДАННЫМИ)
+# ==========================================
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({"error": "Введите имя"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT id FROM players WHERE name = ?', (name,))
+    row = cur.fetchone()
+    conn.close()
+
+    if row:
+        session['player_id'] = row['id']
+        return jsonify({"ok": True, "player_id": row['id'], "name": name})
+    else:
+        return jsonify({"error": "Игрок не найден"}), 404
 
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
-    p_class = (data.get('class') or '').strip()  # именно 'class', как в JSON
+    p_class = (data.get('class') or '').strip()  # JSON поле 'class'
 
     if not name or not p_class:
         return jsonify({"error": "Имя и класс обязательны"}), 400
@@ -129,33 +164,10 @@ def register():
     finally:
         conn.close()
 
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json() or {}
-    name = (data.get('name') or '').strip()
-
-    if not name:
-        return jsonify({"error": "Введите имя"}), 400
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('SELECT id FROM players WHERE name = ?', (name,))
-    row = cur.fetchone()
-    conn.close()
-
-    if row:
-        session['player_id'] = row['id']
-        return jsonify({"ok": True, "player_id": row['id'], "name": name})
-    else:
-        return jsonify({"error": "Игрок не найден"}), 404
-
 @app.route('/player-status')
 @login_required
 def player_status():
     player_id = session.get('player_id')
-    if not player_id:
-        return jsonify({"error": "Нет сессии"}), 401
-
     conn = get_db()
     cur = conn.cursor()
     cur.execute('SELECT * FROM players WHERE id = ?', (player_id,))
@@ -177,8 +189,7 @@ def player_status():
 @login_required
 def chat_history():
     limit = request.args.get('limit', 30, type=int)
-    if limit > 100:
-        limit = 100
+    if limit > 100: limit = 100
     player_id = session.get('player_id')
 
     conn = get_db()
@@ -195,12 +206,7 @@ def chat_history():
 
     messages = []
     for r in rows:
-        messages.append({
-            "id": r["id"],
-            "player_name": r["player_name"],
-            "text": r["text"],
-            "created_at": r["created_at"]
-        })
+        messages.append({"id": r["id"], "player_name": r["player_name"], "text": r["text"], "created_at": r["created_at"]})
     messages.reverse()
     return jsonify(messages)
 
@@ -234,7 +240,6 @@ def fight():
     player_id = session.get('player_id')
     conn = get_db()
     cur = conn.cursor()
-
     cur.execute('SELECT * FROM players WHERE id = ?', (player_id,))
     p = cur.fetchone()
     if not p:
@@ -276,32 +281,8 @@ def fight():
     conn.close()
 
     result = {
-        "damage_done": damage_done,
-        "damage_received": damage_received,
-        "player_hp": new_player_hp,
-        "mob_hp": new_mob_hp if not is_mob_dead else 0,
-        "is_mob_dead": is_mob_dead,
-        "exp_gained": exp_gain,
-        "aden_gained": aden_gain
+        "damage_done": damage_done, "damage_received": damage_received,
+        "player_hp": new_player_hp, "mob_hp": new_mob_hp if not is_mob_dead else 0,
+        "is_mob_dead": is_mob_dead, "exp_gained": exp_gain, "aden_gained": aden_gain
     }
     return jsonify(result)
-
-@app.route('/')
-def index():
-    return render_template('game.html')
-
-@app.route('/login-page')
-def login_page():
-    # Если уже залогинен — сразу в игру
-    if 'player_id' in session:
-        return render_template('game.html')
-    return render_template('login.html')
-
-@app.route('/register-page')
-def register_page():
-    # Если уже залогинен — сразу в игру
-    if 'player_id' in session:
-        return render_template('game.html')
-    return render_template('register.html')
-
-
