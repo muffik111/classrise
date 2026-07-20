@@ -2,7 +2,7 @@ import os
 import logging
 from functools import wraps
 import sqlite3
-from flask import Flask, request, jsonify, session, g
+from flask import Flask, request, jsonify, session, g, render_template
 
 # --- ЛОГИРОВАНИЕ ---
 logger = logging.getLogger(__name__)
@@ -74,13 +74,17 @@ def init_db():
 init_db()
 
 # --- СОЗДАНИЕ ПРИЛОЖЕНИЯ ---
-app = Flask(__name__)
+app = Flask(__name__, template_folder='templates')
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
 # --- ИМПОРТЫ ИГР. МОДУЛЕЙ ---
-# Убедись, что файлы items.py и classes.py есть в папке проекта
-from items import ITEMS_DB, calc_stats
-from classes import get_class_stats, class_stats
+try:
+    from items import ITEMS_DB, calc_stats
+    from classes import get_class_stats, class_stats
+except ImportError as e:
+    logger.error(f"Ошибка импорта игровых модулей: {e}")
+    # Если файлов нет — сервер запустится, но игровые механики будут падать.
+    # Для теста можно временно заглушить, но на Amvera эти файлы должны быть в репозитории.
 
 # --- ДЕКОРАТОР АВТОРИЗАЦИИ ---
 def login_required(f):
@@ -105,7 +109,13 @@ def register():
     conn = get_db()
     cur = conn.cursor()
     try:
-        stats = get_class_stats(p_class) or {"attack": 5, "defense": 3}
+        # Если get_class_stats недоступен — используем дефолт
+        stats = {}
+        try:
+            stats = get_class_stats(p_class) or {}
+        except:
+            pass
+
         cur.execute('''
             INSERT INTO players (name, class, attack, defense)
             VALUES (?, ?, ?, ?)
@@ -276,7 +286,7 @@ def fight():
     }
     return jsonify(result)
 
-# Главная страница — просто отдаём index.html или game.html
+# Главная страница — теперь правильно отдаёт из templates
 @app.route('/')
 def index():
-    return send_from_directory('static', 'game.html')
+    return render_template('game.html')
