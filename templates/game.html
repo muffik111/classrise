@@ -295,6 +295,7 @@
   var mobAttack = 12;
 
   async function startFight() {
+      async function startFight() {
     var btn = document.getElementById('btn-fight');
     var log = document.getElementById('fightLog');
 
@@ -310,13 +311,15 @@
       log.innerHTML = '';
       btn.textContent = 'Атаковать моба!';
       btn.disabled = false;
-
-      addLog('Бой начался! Вы против моба (HP: ' + mobHp + ').');
+      addLog('Бой начался! Вы против моба (HP: 50).');
       return;
     }
 
-    // Ход игрока
-    var playerDmg = Math.max(1, Math.floor(currentPlayer.attack * (0.8 + Math.random() * 0.4)));
+    // --- РАСЧЁТ УРОНА ИГРОКА ---
+    var mobDefense = 2; // Защита обычного моба
+    // Формула: Атака * (разброс 0.8-1.2) минус защита врага. Минимум 1 урон.
+    var playerDmg = Math.max(1, Math.floor(currentPlayer.attack * (0.8 + Math.random() * 0.4)) - mobDefense);
+    
     mobHp -= playerDmg;
     addLog('Вы нанесли мобу ' + playerDmg + ' урона. У моба осталось ' + mobHp + ' HP.');
 
@@ -327,8 +330,7 @@
       btn.textContent = 'Бой завершён: моб повержен!';
       addLog('🎉 Победа! Моб повержен.');
 
-      // Победа: начисляем награду
-            var rewardAdenas = 15;
+      var rewardAdenas = 15;
       var rewardExp = 25;
 
       currentPlayer.adenas += rewardAdenas;
@@ -341,13 +343,12 @@
       return;
     }
 
-    // Ход моба (сразу после удара игрока)
-    var mobDmg = Math.max(1, Math.floor(mobAttack * (0.8 + Math.random() * 0.4)));
+    // --- РАСЧЁТ УРОНА МОБА (С УЧЁТОМ ТВОЕЙ ЗАЩИТЫ) ---
+    // Формула: Атака моба * (разброс 0.8-1.2) минус твоя защита.
+    var mobDmg = Math.max(1, Math.floor(mobAttack * (0.8 + Math.random() * 0.4)) - currentPlayer.defense);
+    
     currentPlayer.current_hp -= mobDmg;
-
-    if (currentPlayer.current_hp < 0) {
-      currentPlayer.current_hp = 0;
-    }
+    if (currentPlayer.current_hp < 0) currentPlayer.current_hp = 0;
 
     updateStatusBox();
     addLog('Моб нанёс вам ' + mobDmg + ' урона. У вас осталось ' + currentPlayer.current_hp + ' HP.');
@@ -369,6 +370,7 @@
       await handleDeath(penalty);
     }
   }
+
 
   // --- ОБРАБОТКА СМЕРТИ И ТЕЛЕПОРТАЦИЯ (ИСПРАВЛЕНО) ---
   async function handleDeath(penalty) {
