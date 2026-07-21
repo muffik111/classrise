@@ -27,7 +27,7 @@ data_dir = os.getenv('DATA_DIR', '/data')
 if not os.path.exists(data_dir):
     data_dir = os.path.dirname(os.path.abspath(__file__))
 
-DB_PATH = os.path.join(data_dir, 'game.db')
+DB_PATH = os.getenv('DATABASE_PATH', '/data/game.db')
 logger.info(f"[INFO] База данных будет использоваться по пути: {DB_PATH}")
 
 def get_db():
@@ -95,7 +95,23 @@ def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+def migrate_database():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
 
+    # Проверяем колонки accounts
+    cursor.execute("PRAGMA table_info(accounts)")
+    columns = [row[1] for row in cursor.fetchall()]
+
+    if 'is_admin' not in columns:
+        print("⚠️ Колонка is_admin не найдена. Добавляем...")
+        cursor.execute('ALTER TABLE accounts ADD COLUMN is_admin INTEGER DEFAULT 0')
+        conn.commit()
+        print("✅ Колонка is_admin успешно добавлена!")
+    else:
+        print("✅ Колонка is_admin уже существует.")
+
+    conn.close()
 @app.route('/fight-action', methods=['POST'])
 def fight_action():
     data = request.json
