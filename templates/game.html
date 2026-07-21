@@ -243,16 +243,14 @@ function loadPlayerState() {
   return null;
 }
 
-  async function loadStatus() {
+async function loadStatus() {
   var statusBox = document.getElementById('statusBox');
   if (!statusBox) return;
   statusBox.innerHTML = '<p>Загрузка статуса...</p>';
   
   var data = await apiRequest('/player-status');
   
-  // ЛОГИКА ВОССТАНОВЛЕНИЯ ИЗ БРАУЗЕРА
   if (!data) {
-    // Если сервер не ответил, пробуем восстановить из localStorage
     const cached = loadPlayerState();
     if (cached) {
       currentPlayer = cached;
@@ -262,7 +260,7 @@ function loadPlayerState() {
       return;
     }
   } else {
-    // Если сервер ответил, используем его данные, НО сохраняем их в кэш
+    // Сначала копируем данные с сервера
     currentPlayer = {
       char_id: data.id,
       name: data.name,
@@ -277,9 +275,19 @@ function loadPlayerState() {
       defense: data.defense,
       location: data.location || 'city'
     };
-    // Сразу сохраняем свежее состояние в браузер
+
+    // ВАЖНО: автовосстановление HP, если в городе и здоровье ≤ 0
+    if ((currentPlayer.location === 'city' || currentPlayer.location === undefined) && currentPlayer.current_hp <= 0) {
+      console.log('Автовосстановление HP в городе: было ' + currentPlayer.current_hp + ', стало ' + currentPlayer.max_hp);
+      currentPlayer.current_hp = currentPlayer.max_hp;
+    }
+
+    // И только теперь сохраняем в localStorage
     savePlayerState();
   }
+
+  updateStatusBox();
+}
 
   updateStatusBox();
 }
