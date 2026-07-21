@@ -260,8 +260,7 @@
       : 0;
     
     var hpColor = currentPlayer.current_hp > 0 ? '#ff4444' : 'red';
-
-    // ИСПРАВЛЕНО: полностью через конкатенацию, без {{}} и без ${}
+    
     var html = 
       '<p>Имя: <b>' + currentPlayer.name + '</b> | Класс: <b>' + (currentPlayer.class || 'Unknown') + '</b> | Ур: <b>' + currentPlayer.level + '</b></p>' +
       '<p>EXP: ' + currentPlayer.exp + ' / ' + (currentPlayer.next_level_exp || currentPlayer.max_exp) + ' | Адены: ' + currentPlayer.adenas + '</p>' +
