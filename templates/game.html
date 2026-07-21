@@ -281,6 +281,29 @@ let isFighting = false;
 let mobHp = 50;
 let mobAttack = 12;
 
+function updateStatusBox() {
+  if (!currentPlayer) return;
+
+  const statusBox = document.getElementById('statusBox');
+  if (!statusBox) return;
+
+  let hpPercent = Math.max(0, Math.min(100, currentPlayer.current_hp / currentPlayer.max_hp * 100));
+  let hpColor = currentPlayer.current_hp > 0 ? '#ff4444' : 'red';
+
+  let html = `
+    <p><b>Имя:</b> ${currentPlayer.name} | <b>Класс:</b> ${currentPlayer.class} | <b>Ур:</b> \${currentPlayer.level}</p>
+    <p><b>EXP:</b> ${currentPlayer.exp} / ${currentPlayer.next_level_exp || 100} | <b>Адены:</b> \${currentPlayer.adenas}</p>
+    <div style="width:200px; background:#333; border:1px solid #555;">
+       <div style="width:${hpPercent}% ; height:20px; background:${hpColor};"></div>
+    </div>
+    <p><b>HP:</b> ${currentPlayer.current_hp}/${currentPlayer.max_hp} | <b>ATK:</b> ${currentPlayer.attack} | <b>DEF:</b> ${currentPlayer.defense}</p>
+  `;
+
+  statusBox.innerHTML = html;
+}
+
+
+
 async function startFight() {
   const btn = document.getElementById('btn-fight');
   const log = document.getElementById('fightLog');
@@ -354,7 +377,6 @@ async function startFight() {
 // --- ОБРАБОТКА СМЕРТИ И ТЕЛЕПОРТАЦИЯ ---
 async function handleDeath(penalty) {
   try {
-    // Списываем адены и телепортируем в город (location = 'city')
     const res = await fetch('/player-death', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -369,12 +391,14 @@ async function handleDeath(penalty) {
       addChatMessage('СИСТЕМА', data.message || 'Вы погибли и были телепортированы в город.', true);
 
       // Обновляем локальные данные игрока
-      currentPlayer.gold -= penalty;
+      currentPlayer.adenas -= penalty;
       currentPlayer.location = 'city';
+      
+      // Перерисовываем статус (теперь это сработает корректно)
       updateStatusBox();
 
       // Телепортируем на вкладку «Город»
-      switchTab('tab-city'); // или твоя функция переключения вкладок
+      switchTab('city');
     } else {
       const err = await res.json().catch(() => ({}));
       addChatMessage('СИСТЕМА', err.error || 'Ошибка при обработке смерти', true);
