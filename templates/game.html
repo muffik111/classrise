@@ -224,6 +224,7 @@
 
   async function loadStatus() {
     var statusBox = document.getElementById('statusBox');
+    if (!statusBox) return;
     statusBox.innerHTML = '<p>Загрузка статуса...</p>';
     
     var data = await apiRequest('/player-status');
@@ -274,6 +275,7 @@
   // --- ТЕЛЕПОРТАЦИЯ (ЗАГЛУШКА ПОД СЕРВЕР) ---
   async function handleTeleport() {
     var citySelect = document.getElementById('teleport-city');
+    if (!citySelect) return;
     var cityName = citySelect.options[citySelect.selectedIndex].text;
 
     if (!currentPlayer) {
@@ -295,7 +297,6 @@
   var mobAttack = 12;
 
   async function startFight() {
-      async function startFight() {
     var btn = document.getElementById('btn-fight');
     var log = document.getElementById('fightLog');
 
@@ -370,7 +371,6 @@
       await handleDeath(penalty);
     }
   }
-
 
   // --- ОБРАБОТКА СМЕРТИ И ТЕЛЕПОРТАЦИЯ (ИСПРАВЛЕНО) ---
   async function handleDeath(penalty) {
@@ -454,14 +454,16 @@
     addChatMessage('СИСТЕМА', 'Чат подключён. Добро пожаловать в ClassRise!', true);
   }
 
-  chatInput.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      sendChatMessage();
-    }
-  });
+  if (chatInput && chatSendBtn) {
+    chatInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        sendChatMessage();
+      }
+    });
 
-  chatSendBtn.addEventListener('click', sendChatMessage);
+    chatSendBtn.addEventListener('click', sendChatMessage);
+  }
 
   async function sendChatMessage() {
     var text = chatInput.value.trim();
@@ -487,4 +489,3 @@
 </script>
 </body>
 </html>
-
