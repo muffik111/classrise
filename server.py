@@ -6,10 +6,8 @@ from flask import Flask, request, jsonify, session, render_template, url_for, re
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 
-
-
-# --- МАРКЕР ВЕРСИИ (чтобы видеть в логах Amvera, что код обновился) ---
-print("=== VERSION: 2026-07-21-FIX-405 ===")
+# --- МАРКЕР ВЕРСИИ ---
+print("=== VERSION: 2026-07-21-FIX-LOGIN-SESSION-DB ===")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -78,7 +76,6 @@ def init_db():
         FOREIGN KEY (char_id) REFERENCES characters(id)
     );
 ''')
-
     conn.commit()
     conn.close()
     logger.info("[INIT] Таблицы готовы.")
@@ -88,46 +85,53 @@ init_db()
 app = Flask(__name__, template_folder='templates')
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
-# --- ИМПОРТЫ (если файлов нет, сервер запустится, но механики будут падать) ---
+# --- ИМПОРТЫ ---
 try:
     from items import ITEMS_DB, calc_stats
     from classes import get_class_stats, class_stats
 except ImportError as e:
     logger.error(f"Warning: игровые модули не найдены: {e}")
 
-# --- ДЕКОРАТОР АВТОРИЗАЦИИ ---
+# ==========================================
+# ДЕКОРАТОР АВТОРИЗАЦИИ (ИСПРАВЛЕНО)
+# ==========================================
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'player_id' not in session:
-            return jsonify({"error": "Требуется авторизация"}), 401
+        # Мы сохраняем в сессии char_id, а не player_id
+        if 'char_id' not in session:
+            # Для API роутов возвращаем JSON 401
+            if request.path.startswith('/api') or request.headers.get('Accept') == 'application/json':
+                return jsonify({"error": "Требуется авторизация"}), 401
+            # Для HTML страниц — редирект на страницу входа
+            return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
 
 # ==========================================
-# РОУТЫ СТРАНИЦ (ТОЛЬКО GET, ОТДАЮТ HTML)
+# РОУТЫ СТРАНИЦ (ТОЛЬКО GET)
 # ==========================================
 
 @app.route('/')
 def index():
-    if 'player_id' not in session:
-        return render_template('login.html')
-    return render_template('game.html')
+    if 'char_id' in session:
+        return render_template('game.html')
+    return render_template('login.html')
 
 @app.route('/login-page')
 def login_page():
-    if 'player_id' in session:
+    if 'char_id' in session:
         return render_template('game.html')
     return render_template('login.html')
 
 @app.route('/register-page')
 def register_page():
-    if 'player_id' in session:
+    if 'char_id' in session:
         return render_template('game.html')
     return render_template('register.html')
 
 # ==========================================
-# API РОУТЫ (ТОЛЬКО POST, РАБОТАЮТ С ДАННЫМИ)
+# API РОУТЫ (POST)
 # ==========================================
 
 @app.route('/register', methods=['POST'])
@@ -144,13 +148,11 @@ def register():
     conn = get_db()
     cur = conn.cursor()
     try:
-        # 1. Создаём аккаунт
         pwd_hash = generate_password_hash(password)
         cur.execute('INSERT INTO accounts (username, password_hash) VALUES (?, ?)',
                     (username, pwd_hash))
         account_id = cur.lastrowid
 
-        # 2. Создаём персонажа, привязанного к аккаунту
         stats = {}
         try:
             stats = get_class_stats(p_class) or {}
@@ -167,9 +169,10 @@ def register():
 
     except sqlite3.IntegrityError as e:
         conn.rollback()
-        if 'username' in str(e).lower():
+        err_str = str(e).lower()
+        if 'username' in err_str:
             return jsonify({"error": "Такой логин уже занят"}), 409
-        if 'name' in str(e).lower():
+        if 'name' in err_str:
             return jsonify({"error": "Такое имя персонажа уже занято"}), 409
         return jsonify({"error": "Ошибка регистрации"}), 500
     finally:
@@ -188,7 +191,6 @@ def login():
     conn = get_db()
     cur = conn.cursor()
 
-    # Ищем аккаунт
     cur.execute('SELECT id, password_hash FROM accounts WHERE username = ? AND is_active = 1', (username,))
     row = cur.fetchone()
     conn.close()
@@ -198,11 +200,9 @@ def login():
 
     account_id, stored_hash = row
 
-    # Проверяем пароль
     if not check_password_hash(stored_hash, password):
         return jsonify({"error": "Неверный логин или пароль"}), 401
 
-    # Находим первого персонажа этого аккаунта (можно позже сделать выбор персонажа)
     conn = get_db()
     cur = conn.cursor()
     cur.execute('SELECT id FROM characters WHERE account_id = ? LIMIT 1', (account_id,))
@@ -214,29 +214,38 @@ def login():
 
     char_id = char_row['id']
 
-    # Сохраняем в сессию: account_id (для безопасности) и char_id (для игры)
-    session['account_id'] = account_id
+    # ИСПРАВЛЕНО: сохраняем char_id (это ID персонажа, который у нас в БД)
     session['char_id'] = char_id
+    session['account_id'] = account_id
 
     return jsonify({"ok": True, "char_id": char_id})
 
+
 @app.route('/logout', methods=['POST'])
 def logout():
-    session.clear()  # Очищаем сессию (удаляем токен/id пользователя)
-    return '', 204   # Возвращаем пустой ответ без ошибки
+    session.clear()
+    return '', 204
 
+
+# ==========================================
+# СТАТУС ИГРОКА (ИСПРАВЛЕНО: characters вместо players)
+# ==========================================
 @app.route('/player-status')
 @login_required
 def player_status():
-    player_id = session.get('player_id')
+    char_id = session.get('char_id')
+    if not char_id:
+        return jsonify({"error": "Нет активного персонажа"}), 401
+
     conn = get_db()
     cur = conn.cursor()
-    cur.execute('SELECT * FROM players WHERE id = ?', (player_id,))
+    # ИСПРАВЛЕНО: используем таблицу characters
+    cur.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
     row = cur.fetchone()
     conn.close()
 
     if not row:
-        return jsonify({"error": "Игрок не найден в БД"}), 404
+        return jsonify({"error": "Персонаж не найден в БД"}), 404
 
     data = dict(row)
     inv_str = data.get('inventory') or ''
@@ -244,21 +253,37 @@ def player_status():
     max_hp = max(1, data.get('max_hp', 1))
     current_hp = max(0, data.get('current_hp', 0))
     data['hp_percent'] = int((current_hp / max_hp) * 100)
+    # Добавим понятные поля для фронтенда
+    data['name'] = data['name']
+    data['class'] = data['class']
+    data['adenas'] = data.get('adenas', 0)
+    data['level'] = data.get('level', 1)
+    data['exp'] = data.get('exp', 0)
+    data['next_level_exp'] = data.get('next_level_exp', 100)
+    data['attack'] = data.get('attack', 5)
+    data['defense'] = data.get('defense', 3)
+    data['current_hp'] = current_hp
+    data['max_hp'] = max_hp
+
     return jsonify(data)
 
+
+# ==========================================
+# ЧАТ (ИСПРАВЛЕНО: JOIN characters -> name, char_id вместо player_id)
+# ==========================================
 @app.route('/chat-history')
 @login_required
 def chat_history():
     limit = request.args.get('limit', 30, type=int)
     if limit > 100: limit = 100
-    player_id = session.get('player_id')
+    char_id = session.get('char_id')
 
     conn = get_db()
     cur = conn.cursor()
     cur.execute('''
-        SELECT cm.id, p.name AS player_name, cm.text, cm.created_at
+        SELECT cm.id, c.name AS player_name, cm.text, cm.created_at
         FROM chat_messages cm
-        JOIN players p ON cm.player_id = p.id
+        JOIN characters c ON cm.char_id = c.id
         ORDER BY cm.id DESC
         LIMIT ?
     ''', (limit,))
@@ -271,13 +296,18 @@ def chat_history():
     messages.reverse()
     return jsonify(messages)
 
+
 @app.route('/chat-send', methods=['POST'])
+@login_required
 def chat_send():
     data = request.get_json() or {}
     char_id = data.get('char_id')
     text = (data.get('text') or '').strip()
 
-    # Простая валидация
+    # Если char_id не передан, берём из сессии
+    if not char_id and 'char_id' in session:
+        char_id = session['char_id']
+
     if not char_id or not text:
         return jsonify({"error": "Некорректные данные"}), 400
     if len(text) > 250:
@@ -286,21 +316,15 @@ def chat_send():
     conn = get_db()
     cur = conn.cursor()
     try:
-        # Вставляем сообщение в БД
         cur.execute('''
             INSERT INTO chat_messages (char_id, text)
             VALUES (?, ?)
         ''', (char_id, text))
         conn.commit()
-
-        # Опционально: можно сразу вернуть данные для фронтенда
-        return jsonify({
-            "ok": True,
-            "message": "Отправлено"
-        }), 200
+        return jsonify({"ok": True, "message": "Отправлено"}), 200
     except Exception as e:
         conn.rollback()
-        print("Chat send error:", e)
+        logger.error("Chat send error: %s", e)
         return jsonify({"error": "Ошибка сохранения сообщения"}), 500
     finally:
         conn.close()
@@ -310,14 +334,17 @@ import random
 @app.route('/fight', methods=['POST'])
 @login_required
 def fight():
-    player_id = session.get('player_id')
+    char_id = session.get('char_id')
+    if not char_id:
+        return jsonify({"error": "Нет активного персонажа"}), 401
+
     conn = get_db()
     cur = conn.cursor()
-    cur.execute('SELECT * FROM players WHERE id = ?', (player_id,))
+    cur.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
     p = cur.fetchone()
     if not p:
         conn.close()
-        return jsonify({"error": "Игрок не найден"}), 404
+        return jsonify({"error": "Персонаж не найден"}), 404
     
     player = dict(p)
     mob_hp_start = 50
@@ -346,16 +373,20 @@ def fight():
         session['mob_hp'] = new_mob_hp
 
     cur.execute('''
-        UPDATE players
+        UPDATE characters
         SET current_hp = ?, exp = ?, adenas = ?
         WHERE id = ?
-    ''', (new_player_hp, player['exp'] + exp_gain, player['adenas'] + aden_gain, player_id))
+    ''', (new_player_hp, player['exp'] + exp_gain, player['adenas'] + aden_gain, char_id))
     conn.commit()
     conn.close()
 
     result = {
-        "damage_done": damage_done, "damage_received": damage_received,
-        "player_hp": new_player_hp, "mob_hp": new_mob_hp if not is_mob_dead else 0,
-        "is_mob_dead": is_mob_dead, "exp_gained": exp_gain, "aden_gained": aden_gain
+        "damage_done": damage_done,
+        "damage_received": damage_received,
+        "player_hp": new_player_hp,
+        "mob_hp": new_mob_hp if not is_mob_dead else 0,
+        "is_mob_dead": is_mob_dead,
+        "exp_gained": exp_gain,
+        "aden_gained": aden_gain
     }
     return jsonify(result)
