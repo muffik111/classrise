@@ -221,15 +221,48 @@
       window.location.href = '/login-page';
     }
   }
+function savePlayerState() {
+  if (currentPlayer) {
+    // Сохраняем только нужные данные, JSON.stringify превращает объект в строку
+    localStorage.setItem('classrise_player', JSON.stringify(currentPlayer));
+  }
+}
+
+function loadPlayerState() {
+  const saved = localStorage.getItem('classrise_player');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      // Возвращаем сохраненное состояние, но обновляем только HP, если сервер молчит
+      return parsed;
+    } catch (e) {
+      console.error('Ошибка чтения сохраненных данных', e);
+      return null;
+    }
+  }
+  return null;
+}
 
   async function loadStatus() {
-    var statusBox = document.getElementById('statusBox');
-    if (!statusBox) return;
-    statusBox.innerHTML = '<p>Загрузка статуса...</p>';
-    
-    var data = await apiRequest('/player-status');
-    if (!data) return; 
-
+  var statusBox = document.getElementById('statusBox');
+  if (!statusBox) return;
+  statusBox.innerHTML = '<p>Загрузка статуса...</p>';
+  
+  var data = await apiRequest('/player-status');
+  
+  // ЛОГИКА ВОССТАНОВЛЕНИЯ ИЗ БРАУЗЕРА
+  if (!data) {
+    // Если сервер не ответил, пробуем восстановить из localStorage
+    const cached = loadPlayerState();
+    if (cached) {
+      currentPlayer = cached;
+      addChatMessage('СИСТЕМА', 'Сервер недоступен. Загружено последнее состояние из браузера.', true);
+    } else {
+      statusBox.innerHTML = '<p>Не удалось загрузить статус (нет сети и нет кэша)</p>';
+      return;
+    }
+  } else {
+    // Если сервер ответил, используем его данные, НО сохраняем их в кэш
     currentPlayer = {
       char_id: data.id,
       name: data.name,
@@ -244,9 +277,12 @@
       defense: data.defense,
       location: data.location || 'city'
     };
-
-    updateStatusBox();
+    // Сразу сохраняем свежее состояние в браузер
+    savePlayerState();
   }
+
+  updateStatusBox();
+}
 
   function updateStatusBox() {
     if (!currentPlayer) return;
@@ -336,7 +372,7 @@
 
       currentPlayer.adenas += rewardAdenas;
       currentPlayer.exp += rewardExp;
-
+      savePlayerState();
       updateStatusBox();
       addChatMessage('СИСТЕМА', 'Победа! Получено: ' + rewardAdenas + ' аден, ' + rewardExp + ' EXP.', true);
 
@@ -350,7 +386,7 @@
     
     currentPlayer.current_hp -= mobDmg;
     if (currentPlayer.current_hp < 0) currentPlayer.current_hp = 0;
-
+    savePlayerState();
     updateStatusBox();
     addLog('Моб нанёс вам ' + mobDmg + ' урона. У вас осталось ' + currentPlayer.current_hp + ' HP.');
 
@@ -400,7 +436,7 @@
 
         // Гарантированно восстанавливаем HP до max (на случай рассинхрона)
         currentPlayer.current_hp = currentPlayer.max_hp;
-
+        savePlayerState();
         updateStatusBox();
         switchTab('city');
       } else {
@@ -408,6 +444,7 @@
         addChatMessage('СИСТЕМА', err.error || 'Ошибка при обработке смерти', true);
         // Даже при ошибке делаем респаун локально, чтобы игрок мог играть дальше
         currentPlayer.current_hp = currentPlayer.max_hp;
+        savePlayerState();
         updateStatusBox();
         switchTab('city');
       }
