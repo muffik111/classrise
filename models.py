@@ -16,19 +16,20 @@ class Player(db.Model):
     atk = db.Column(db.Integer, default=5)
     defense = db.Column(db.Integer, default=3)
 
-    def to_dict(self):
-        return {
-            "name": self.name,
-            "class": self.player_class,
-            "level": self.level,
-            "exp": self.exp,
-            "max_exp": self.max_exp,
-            "adenas": self.adenas,
-            "hp": self.hp,
-            "max_hp": self.max_hp,
-            "atk": self.atk,
-            "def": self.defense
-        }
+def to_dict(self):
+    return {
+        "name": self.name,
+        "player_class": self.player_class,      # Лучше явно, чем "class"
+        "level": self.level,
+        "exp": self.exp,
+        "max_exp": self.max_exp,
+        "adenas": self.adenas,
+        "hp": self.hp,
+        "max_hp": self.max_hp,
+        "atk": self.atk,
+        "defense": self.defense                 # Используй полное имя, а не "def"
+    }
+
 
 class ChatMessage(db.Model):
     __tablename__ = 'chat_messages'
