@@ -5,6 +5,7 @@ from functools import wraps
 import sqlite3
 from flask import Flask, request, jsonify, session, render_template, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
+import random 
 
 # --- МАРКЕР ВЕРСИИ ---
 print("=== VERSION: 2026-07-23-FIX-SYNC-FRONT-BACK-AMVERA-CLEAN-SQLITE ===")
@@ -90,7 +91,117 @@ def init_db():
 
 # Запускаем инициализацию БД сразу при старте скрипта
 init_db()
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
+@app.route('/fight-action', methods=['POST'])
+def fight_action():
+    data = request.json
+    char_id = data.get('char_id')
+
+    if not char_id:
+        return jsonify({'error': 'Нет ID персонажа'}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Получаем игрока из БД
+    cursor.execute('SELECT * FROM players WHERE id = ?', (char_id,))
+    player = cursor.fetchone()
+    if not player:
+        conn.close()
+        return jsonify({'error': 'Игрок не найден'}), 404
+
+    # Параметры моба (в будущем лучше вынести в таблицу mobs)
+    mob_hp = 50
+    mob_attack = 12
+    mob_defense = 2
+
+    current_hp = player['current_hp']
+    max_hp = player['max_hp']
+    attack = player['attack']
+    defense = player['defense']
+    adenas = player['adenas']
+    exp = player['exp']
+    location = player['location']
+
+    log_messages = []
+    is_victory = False
+    is_dead = False
+
+    # --- Ход игрока ---
+    player_dmg = max(1, int(attack * (0.8 + random.random() * 0.4)) - mob_defense)
+    mob_hp -= player_dmg
+    log_messages.append(f"Вы нанесли мобу {player_dmg} урона. У моба осталось {mob_hp} HP.")
+
+    # Проверка победы
+    if mob_hp <= 0:
+        is_victory = True
+        reward_adenas = 15
+        reward_exp = 25
+        adenas += reward_adenas
+        exp += reward_exp
+        log_messages.append(f"🎉 Победа! Моб повержен. Получено: {reward_adenas} аден, {reward_exp} EXP.")
+    else:
+        # --- Ход моба ---
+        mob_dmg = max(1, int(mob_attack * (0.8 + random.random() * 0.4)) - defense)
+        current_hp -= mob_dmg
+        log_messages.append(f"Моб нанёс вам {mob_dmg} урона. У вас осталось {current_hp} HP.")
+
+        # Проверка смерти
+        if current_hp <= 0:
+            is_dead = True
+            penalty = int(adenas * 0.05)
+            if penalty > 0:
+                adenas -= penalty
+                log_messages.append(f"💀 Вы погибли! Потеряно {penalty} аден.")
+            else:
+                log_messages.append("💀 Вы погибли!")
+
+            # Телепортация и респаун
+            current_hp = max_hp
+            location = 'city'
+            log_messages.append("Вы были телепортированы в город и воскресли.")
+
+    # Обновляем БД в транзакции
+    try:
+        cursor.execute('''
+            UPDATE players
+            SET current_hp = ?, adenas = ?, exp = ?, location = ?
+            WHERE id = ?
+        ''', (current_hp, adenas, exp, location, char_id))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+    # Формируем ответ
+    response_data = {
+        'player': {
+            'id': player['id'],
+            'name': player['name'],
+            'class': player['class_name'],      # проверь название колонки в БД
+            'level': player['level'],
+            'adenas': adenas,
+            'exp': exp,
+            'next_level_exp': player['next_level_exp'],
+            'current_hp': current_hp,
+            'max_hp': max_hp,
+            'attack': attack,
+            'defense': defense,
+            'location': location
+        },
+        'log': '\n'.join(log_messages),
+        'is_victory': is_victory,
+        'is_dead': is_dead
+    }
+
+    return jsonify(response_data)
 # ==========================================
 # ИГРОВАЯ ЛОГИКА (Заглушки, если нет файлов items.py / classes.py)
 # ==========================================
