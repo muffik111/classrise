@@ -6,7 +6,6 @@ import sqlite3
 from flask import Flask, request, jsonify, session, render_template, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 import random 
-from your_app import app, get_db, logger, login_required
 
 # --- МАРКЕР ВЕРСИИ ---
 print("=== VERSION: 2026-07-23-FIX-SYNC-FRONT-BACK-AMVERA-CLEAN-SQLITE ===")
