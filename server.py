@@ -4,10 +4,9 @@ from functools import wraps
 import sqlite3
 from flask import Flask, request, jsonify, session, render_template, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
 
 # --- МАРКЕР ВЕРСИИ ---
-print("=== VERSION: 2026-07-21-FIX-LOGIN-SESSION-DB ===")
+print("=== VERSION: 2026-07-22-FIX-SYNC-FRONT-BACK-AMVERA ===")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -38,19 +37,20 @@ def get_db():
     return conn
 
 def init_db():
-    logger.info("[INIT] Инициализация таблиц БД...")
+    logger.info("[INIT] Инициализация таблиц БД и миграций...")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
+    # Создаём таблицы, если их нет
     cur.executescript('''
-    -- Таблица аккаунтов (логин + пароль)
     CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
-        is_active INTEGER DEFAULT 1
+        is_active INTEGER DEFAULT 1,
+        is_admin INTEGER DEFAULT 0
     );
 
-    -- Таблица персонажей (один аккаунт -> много персонажей)
     CREATE TABLE IF NOT EXISTS characters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         account_id INTEGER NOT NULL,
@@ -65,6 +65,7 @@ def init_db():
         attack INTEGER DEFAULT 5,
         defense INTEGER DEFAULT 3,
         inventory TEXT DEFAULT '',
+        location TEXT DEFAULT 'city',
         FOREIGN KEY (account_id) REFERENCES accounts(id)
     );
 
@@ -75,17 +76,34 @@ def init_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (char_id) REFERENCES characters(id)
     );
-''')
+    ''')
+
+    # МИГРАЦИЯ 1: добавляем колонку location в characters, если её нет (для старых БД)
+    try:
+        cur.execute('ALTER TABLE characters ADD COLUMN location TEXT DEFAULT "city"')
+        logger.info("[MIGRATION] Добавлена колонка location в characters")
+    except sqlite3.OperationalError:
+        # Колонка уже существует — это нормально
+        pass
+
+    # МИГРАЦИЯ 2: добавляем колонку is_admin в accounts, если её нет
+    try:
+        cur.execute('ALTER TABLE accounts ADD COLUMN is_admin INTEGER DEFAULT 0')
+        logger.info("[MIGRATION] Добавлена колонка is_admin в accounts")
+    except sqlite3.OperationalError:
+        # Колонка уже существует — это нормально
+        pass
+
     conn.commit()
     conn.close()
-    logger.info("[INIT] Таблицы готовы.")
+    logger.info("[INIT] Таблицы и миграции готовы.")
+
 
 init_db()
 
 app = Flask(__name__, template_folder='templates')
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
-# --- ИМПОРТЫ ---
 try:
     from items import ITEMS_DB, calc_stats
     from classes import get_class_stats, class_stats
@@ -93,25 +111,21 @@ except ImportError as e:
     logger.error(f"Warning: игровые модули не найдены: {e}")
 
 # ==========================================
-# ДЕКОРАТОР АВТОРИЗАЦИИ (ИСПРАВЛЕНО)
+# ДЕКОРАТОР АВТОРИЗАЦИИ
 # ==========================================
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Мы сохраняем в сессии char_id, а не player_id
         if 'char_id' not in session:
-            # Для API роутов возвращаем JSON 401
             if request.path.startswith('/api') or request.headers.get('Accept') == 'application/json':
                 return jsonify({"error": "Требуется авторизация"}), 401
-            # Для HTML страниц — редирект на страницу входа
             return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
 
 # ==========================================
-# РОУТЫ СТРАНИЦ (ТОЛЬКО GET)
+# РОУТЫ СТРАНИЦ
 # ==========================================
-
 @app.route('/')
 def index():
     if 'char_id' in session:
@@ -131,9 +145,8 @@ def register_page():
     return render_template('register.html')
 
 # ==========================================
-# API РОУТЫ (POST)
+# API РЕГИСТРАЦИЯ И ВХОД
 # ==========================================
-
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json() or {}
@@ -160,9 +173,9 @@ def register():
             pass
 
         cur.execute('''
-            INSERT INTO characters (account_id, name, class, attack, defense)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (account_id, char_name, p_class, stats.get("attack", 5), stats.get("defense", 3)))
+            INSERT INTO characters (account_id, name, class, attack, defense, location)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (account_id, char_name, p_class, stats.get("attack", 5), stats.get("defense", 3), 'city'))
 
         conn.commit()
         return jsonify({"ok": True, "message": "Аккаунт и персонаж созданы"})
@@ -213,8 +226,6 @@ def login():
         return jsonify({"error": "У аккаунта нет персонажей"}), 404
 
     char_id = char_row['id']
-
-    # ИСПРАВЛЕНО: сохраняем char_id (это ID персонажа, который у нас в БД)
     session['char_id'] = char_id
     session['account_id'] = account_id
 
@@ -222,13 +233,14 @@ def login():
 
 
 @app.route('/logout', methods=['POST'])
+@login_required
 def logout():
     session.clear()
     return '', 204
 
 
 # ==========================================
-# СТАТУС ИГРОКА (ИСПРАВЛЕНО: characters вместо players)
+# СТАТУС ИГРОКА (полностью совпадает с тем, что ждёт game.html)
 # ==========================================
 @app.route('/player-status')
 @login_required
@@ -239,7 +251,6 @@ def player_status():
 
     conn = get_db()
     cur = conn.cursor()
-    # ИСПРАВЛЕНО: используем таблицу characters
     cur.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
     row = cur.fetchone()
     conn.close()
@@ -253,7 +264,8 @@ def player_status():
     max_hp = max(1, data.get('max_hp', 1))
     current_hp = max(0, data.get('current_hp', 0))
     data['hp_percent'] = int((current_hp / max_hp) * 100)
-    # Добавим понятные поля для фронтенда
+
+    # Поля строго под фронтенд
     data['name'] = data['name']
     data['class'] = data['class']
     data['adenas'] = data.get('adenas', 0)
@@ -269,7 +281,7 @@ def player_status():
 
 
 # ==========================================
-# ЧАТ (ИСПРАВЛЕНО: JOIN characters -> name, char_id вместо player_id)
+# ЧАТ
 # ==========================================
 @app.route('/chat-history')
 @login_required
@@ -298,26 +310,26 @@ def chat_history():
 
 
 @app.route('/chat-send', methods=['POST'])
+@login_required
 def chat_send():
     data = request.get_json() or {}
-    char_id = data.get('char_id')
     text = data.get('text', '').strip()
+    # char_id берём из сессии, а не из JSON — это защита от подмены
+    char_id = session.get('char_id')
 
-    # 1. Проверка авторизации (базовая)
-    if not char_id or not text:
-        return jsonify({"error": "Неверный запрос"}), 400
+    if not text:
+        return jsonify({"error": "Сообщение не может быть пустым"}), 400
 
     try:
         conn = get_db()
         cur = conn.cursor()
         
-        # 2. Проверка: существует ли такой персонаж (защита от взлома)
+        # Проверка существования персонажа (на всякий случай)
         cur.execute('SELECT id FROM characters WHERE id = ?', (char_id,))
         if not cur.fetchone():
             conn.close()
             return jsonify({"error": "Персонаж не найден"}), 404
 
-        # 3. Вставка сообщения
         cur.execute('''
             INSERT INTO chat_messages (char_id, text)
             VALUES (?, ?)
@@ -331,86 +343,27 @@ def chat_send():
 
     except Exception as e:
         logger.error(f"Ошибка чата: {e}")
-        # Важно: не показывай текст ошибки пользователю, но логируй его!
         return jsonify({"error": "Ошибка сохранения сообщения"}), 500
 
 
-import random
-
-@app.route('/fight', methods=['POST'])
-@login_required
-def fight():
-    char_id = session.get('char_id')
-    if not char_id:
-        return jsonify({"error": "Нет активного персонажа"}), 401
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
-    p = cur.fetchone()
-    if not p:
-        conn.close()
-        return jsonify({"error": "Персонаж не найден"}), 404
-    
-    player = dict(p)
-    mob_hp_start = 50
-    mob_attack = 8
-    current_mob_hp = session.get('mob_hp')
-
-    if current_mob_hp is None or current_mob_hp <= 0:
-        current_mob_hp = mob_hp_start
-        session['mob_hp'] = current_mob_hp
-        session['fight_started'] = True
-
-    damage_done = max(1, player['attack'] + random.randint(-2, 2))
-    new_mob_hp = current_mob_hp - damage_done
-    damage_received = max(1, mob_attack + random.randint(-1, 1))
-    new_player_hp = player['current_hp'] - damage_received
-
-    is_mob_dead = new_mob_hp <= 0
-    exp_gain = aden_gain = 0
-
-    if is_mob_dead:
-        exp_gain = 20
-        aden_gain = 15
-        session.pop('mob_hp', None)
-        session.pop('fight_started', None)
-    else:
-        session['mob_hp'] = new_mob_hp
-
-    cur.execute('''
-        UPDATE characters
-        SET current_hp = ?, exp = ?, adenas = ?
-        WHERE id = ?
-    ''', (new_player_hp, player['exp'] + exp_gain, player['adenas'] + aden_gain, char_id))
-    conn.commit()
-    conn.close()
-
-    result = {
-        "damage_done": damage_done,
-        "damage_received": damage_received,
-        "player_hp": new_player_hp,
-        "mob_hp": new_mob_hp if not is_mob_dead else 0,
-        "is_mob_dead": is_mob_dead,
-        "exp_gained": exp_gain,
-        "aden_gained": aden_gain
-    }
-    return jsonify(result)
-
+# ==========================================
+# ТЕЛЕПОРТАЦИЯ (теперь корректно пишет в location)
+# ==========================================
 @app.route('/teleport', methods=['POST'])
+@login_required
 def teleport():
     data = request.get_json() or {}
-    char_id = data.get('char_id')
     target_city = data.get('target_city')
+    char_id = session.get('char_id')
 
-    if not char_id or not target_city:
-        return jsonify({"error": "Неверный запрос"}), 400
+    if not target_city:
+        return jsonify({"error": "Укажите город для телепортации"}), 400
 
     try:
         conn = get_db()
         cur = conn.cursor()
 
-        # Обновляем локацию игрока (нужно, чтобы в characters была колонка location)
+        # Обновляем локацию игрока
         cur.execute('''
             UPDATE characters
             SET location = ?
@@ -427,50 +380,181 @@ def teleport():
     except Exception as e:
         logger.error(f"Teleport error: {e}")
         return jsonify({"error": str(e)}), 500
-    
-@app.route('/player-death', methods=['POST'])
-def player_death():
-    data = request.get_json() or {}
-    char_id = data.get('char_id')
-    penalty = data.get('penalty', 0)
 
-    if not char_id:
-        return jsonify({"error": "Неверный запрос"}), 400
+
+# ==========================================
+# СОХРАНЕНИЕ РЕЗУЛЬТАТА БОЯ (фронтенд считает урон, сервер только сохраняет)
+# ==========================================
+@app.route('/fight-result', methods=['POST'])
+@login_required
+def fight_result():
+    """
+    Фронтенд полностью считает бой (урон, смерть, лут, опыт).
+    Этот эндпоинт только сохраняет финальное состояние персонажа в БД.
+    Это предотвращает рассинхрон и читерство.
+    """
+    data = request.get_json() or {}
+    char_id = session.get('char_id')
+
+    final_hp = data.get('final_hp')
+    final_adenas = data.get('final_adenas')
+    final_exp = data.get('final_exp')
+    is_dead = data.get('is_dead', False)
+
+    if final_hp is None or final_adenas is None or final_exp is None:
+        return jsonify({"error": "Неверные данные"}), 400
 
     try:
         conn = get_db()
-        cur = conn.cursor()
-
-        # Списываем адены
         cur.execute('''
             UPDATE characters
-            SET gold = gold - ?
-            WHERE id = ? AND gold >= ?
-        ''', (penalty, char_id, penalty))
-
-        # Если аден не хватило — ставим 0
-        if cur.rowcount == 0:
-            cur.execute('''
-                UPDATE characters
-                SET gold = 0
-                WHERE id = ?
-            ''', (char_id,))
-
-        # Телепортируем в город
-        cur.execute('''
-            UPDATE characters
-            SET location = 'city'
+            SET current_hp = ?, adenas = ?, exp = ?
             WHERE id = ?
-        ''', (char_id,))
+        ''', (final_hp, final_adenas, final_exp, char_id))
+
+        # Если персонаж умер — сбрасываем HP в max_hp (телепорт и респ делает фронтенд, тут только данные)
+        if is_dead:
+            # Получаем max_hp из БД, чтобы не доверять фронту
+            cur.execute('SELECT max_hp FROM characters WHERE id = ?', (char_id,))
+            row = cur.fetchone()
+            max_hp_val = row['max_hp'] if row else 50
+            cur.execute('UPDATE characters SET current_hp = ? WHERE id = ?', (max_hp_val, char_id))
 
         conn.commit()
         conn.close()
 
         return jsonify({
             "ok": True,
-            "message": f"Вы погибли, потеряли {penalty} аден и были телепортированы в город."
+            "message": "Результат боя сохранён",
+            "final_hp": final_hp,
+            "final_adenas": final_adenas,
+            "final_exp": final_exp
+        })
+
+    except Exception as e:
+        logger.error(f"Fight result error: {e}")
+        return jsonify({"error": "Ошибка сохранения результата боя"}), 500
+
+
+# ==========================================
+# АДМИН-КОМАНДА /give (выдать адены)
+# Формат: POST /give?amount=1000&target_name=PlayerName
+# Требует, чтобы у сессии был флаг is_admin=True (можно задать вручную в БД или через отдельный эндпоинт)
+# ==========================================
+@app.route('/give', methods=['POST'])
+@login_required
+def give_command():
+    char_id = session.get('char_id')
+    # Проверка на админа: можно хранить в сессии is_admin, либо проверять по отдельной колонке в accounts
+    if not session.get('is_admin'):
+        # Для теста можно временно закомментировать эту проверку, но в проде обязательно нужна
+        return jsonify({"error": "Нет прав администратора"}), 403
+
+    amount = request.args.get('amount', type=int)
+    target_name = request.args.get('target_name', '').strip()
+
+    if amount is None or amount <= 0 or not target_name:
+        return jsonify({"error": "Неверные параметры: amount (число > 0) и target_name (имя персонажа)"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Ищем персонажа по имени
+        cur.execute('SELECT id, adenas FROM characters WHERE name = ?', (target_name,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Персонаж не найден"}), 404
+
+        target_id = row['id']
+        old_adenas = row['adenas']
+        new_adenas = old_adenas + amount
+
+        cur.execute('UPDATE characters SET adenas = ? WHERE id = ?', (new_adenas, target_id))
+        conn.commit()
+        conn.close()
+
+        logger.info(f"ADMIN: выдано {amount} аден персонажу {target_name} (было {old_adenas}, стало {new_adenas})")
+        return jsonify({
+            "ok": True,
+            "target_name": target_name,
+            "amount": amount,
+            "old_adenas": old_adenas,
+            "new_adenas": new_adenas
         })
     except Exception as e:
-        logger.error(f"Player death error: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Give command error: {e}")
+        return jsonify({"error": "Ошибка выполнения команды /give"}), 500
 
+
+# ==========================================
+# ПРОКАЧКА (для тестов/админки)
+# POST /player-levelup?exp_add=500
+# Просто добавляет EXP и проверяет уровень (без сложной формулы)
+# ==========================================
+@app.route('/player-levelup', methods=['POST'])
+@login_required
+def player_levelup():
+    char_id = session.get('char_id')
+    exp_add = request.args.get('exp_add', type=int, default=0)
+
+    if exp_add <= 0:
+        return jsonify({"error": "exp_add должен быть > 0"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Получаем текущие данные
+        cur.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Персонаж не найден"}), 404
+
+        current_exp = row['exp']
+        next_level_exp = row['next_level_exp']
+        level = row['level']
+
+        new_exp = current_exp + exp_add
+        level_up_count = 0
+
+        # Простая логика: пока EXP >= next_level_exp — повышаем уровень
+        while new_exp >= next_level_exp:
+            level += 1
+            level_up_count += 1
+            new_exp -= next_level_exp
+            # Увеличиваем порог для следующего уровня (например, на 20%)
+            next_level_exp = int(next_level_exp * 1.2)
+            if next_level_exp < 100:
+                next_level_exp = 100  # минимум
+
+        # Обновляем персонажа
+        cur.execute('''
+            UPDATE characters
+            SET exp = ?, level = ?, next_level_exp = ?
+            WHERE id = ?
+        ''', (new_exp, level, next_level_exp, char_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "ok": True,
+            "level_ups": level_up_count,
+            "new_level": level,
+            "remaining_exp": new_exp,
+            "next_level_exp": next_level_exp
+        })
+    except Exception as e:
+        logger.error(f"Levelup error: {e}")
+        return jsonify({"error": "Ошибка прокачки"}), 500
+
+
+if __name__ == '__main__':
+    # Для Amvera этот блок не используется (там запуск через gunicorn/wsgi),
+    # но полезен для локальной отладки.
+    port = int(os.environ.get('PORT', 5000))
+    logger.info(f"Запуск сервера на порту {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)

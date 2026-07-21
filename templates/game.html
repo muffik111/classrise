@@ -163,36 +163,40 @@
     // Скрываем все вкладки
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     
-    // Показываем нужную (ИСПРАВЛЕНО: tab-\${tabName} вместо tab-\${tabName})
-    const target = document.getElementById(`tab-\${tabName}`);
+    // Показываем нужную (ИСПРАВЛЕНО: используем конкатенацию вместо шаблонной строки)
+    const target = document.getElementById('tab-' + tabName);
     if (target) target.classList.add('active');
   }
 
   function addChatMessage(sender, text, isSystem = false) {
     const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    const prefix = isSystem ? '[СИСТЕМА]' : `[\${sender}]`;
-    const colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
-    const safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    
+    // ИСПРАВЛЕНО: конкатенация вместо `${}`
+    var prefix = isSystem ? '[СИСТЕМА]' : '[' + sender + ']';
+    
+    var colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
+    var safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-    const div = document.createElement('div');
-    div.innerHTML = `
-      <span class="${colorClass}">${prefix}</span>
-      <span class="chat-text">\${safeText}</span>
-      <span class="chat-time">(\${time})</span>
-    `;
+    var div = document.createElement('div');
+    // ИСПРАВЛЕНО: полная сборка HTML через +
+    div.innerHTML = 
+      '<span class="' + colorClass + '">' + prefix + '</span>' +
+      '<span class="chat-text">' + safeText + '</span>' +
+      '<span class="chat-time">(' + time + ')</span>';
+      
     chatMessagesBox.appendChild(div);
     chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
   }
 
   async function apiRequest(endpoint, method = 'GET', data = null) {
-    const options = { method };
+    var options = { method: method };
     if (data) {
       options.headers = {'Content-Type': 'application/json'};
       options.body = JSON.stringify(data);
     }
     
     try {
-      const res = await fetch(endpoint, options);
+      var res = await fetch(endpoint, options);
       
       if (res.status === 401) {
         addChatMessage('СИСТЕМА', 'Сессия истекла! Перенаправление на вход...', true);
@@ -201,8 +205,9 @@
       }
 
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Ошибка сервера: \${res.status}`);
+        var errData = await res.json().catch(() => ({}));
+        // ИСПРАВЛЕНО: конкатенация
+        throw new Error(errData.error || 'Ошибка сервера: ' + res.status);
       }
       return await res.json();
     } catch (e) {
@@ -221,10 +226,10 @@
   }
 
   async function loadStatus() {
-    const statusBox = document.getElementById('statusBox');
+    var statusBox = document.getElementById('statusBox');
     statusBox.innerHTML = '<p>Загрузка статуса...</p>';
     
-    const data = await apiRequest('/player-status');
+    var data = await apiRequest('/player-status');
     if (!data) return; 
 
     currentPlayer = {
@@ -247,50 +252,56 @@
   function updateStatusBox() {
     if (!currentPlayer) return;
 
-    const statusBox = document.getElementById('statusBox');
+    var statusBox = document.getElementById('statusBox');
     if (!statusBox) return;
 
-    let hpPercent = Math.max(0, Math.min(100, currentPlayer.current_hp / currentPlayer.max_hp * 100));
-    let hpColor = currentPlayer.current_hp > 0 ? '#ff4444' : 'red';
+    var hpPercent = currentPlayer.max_hp > 0 
+      ? Math.max(0, Math.min(100, (currentPlayer.current_hp / currentPlayer.max_hp) * 100)) 
+      : 0;
+    
+    var hpColor = currentPlayer.current_hp > 0 ? '#ff4444' : 'red';
 
-    let html = `
-      <p><b>Имя:</b> ${currentPlayer.name} | <b>Класс:</b> ${currentPlayer.class} | <b>Ур:</b> \${currentPlayer.level}</p>
-      <p><b>EXP:</b> ${currentPlayer.exp} / ${currentPlayer.next_level_exp || 100} | <b>Адены:</b> \${currentPlayer.adenas}</p>
-      <div style="width:200px; background:#333; border:1px solid #555;">
-         <div style="width:${hpPercent}% ; height:20px; background:${hpColor};"></div>
-      </div>
-      <p><b>HP:</b> ${currentPlayer.current_hp}/${currentPlayer.max_hp} | <b>ATK:</b> ${currentPlayer.attack} | <b>DEF:</b> ${currentPlayer.defense}</p>
-    `;
+    // ИСПРАВЛЕНО: полностью через конкатенацию, без {{}} и без ${}
+    var html = 
+      '<p>Имя: <b>' + currentPlayer.name + '</b> | Класс: <b>' + (currentPlayer.class || 'Unknown') + '</b> | Ур: <b>' + currentPlayer.level + '</b></p>' +
+      '<p>EXP: ' + currentPlayer.exp + ' / ' + (currentPlayer.next_level_exp || currentPlayer.max_exp) + ' | Адены: ' + currentPlayer.adenas + '</p>' +
+      '<div style="width:200px; background:#333; border:1px solid #555; margin: 5px 0;">' +
+         '<div style="width:' + hpPercent + '% ; height:20px; background:' + hpColor + ';"></div>' +
+      '</div>' +
+      '<p>HP: ' + currentPlayer.current_hp + ' / ' + currentPlayer.max_hp + 
+      ' | ATK: ' + currentPlayer.attack + ' | DEF: ' + currentPlayer.defense + '</p>';
 
     statusBox.innerHTML = html;
   }
 
   // --- ТЕЛЕПОРТАЦИЯ (ЗАГЛУШКА ПОД СЕРВЕР) ---
   async function handleTeleport() {
-    const citySelect = document.getElementById('teleport-city');
-    const cityName = citySelect.options[citySelect.selectedIndex].text;
+    var citySelect = document.getElementById('teleport-city');
+    var cityName = citySelect.options[citySelect.selectedIndex].text;
 
     if (!currentPlayer) {
       addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
       return;
     }
 
-    addChatMessage('СИСТЕМА', `Вы телепортируетесь в город: \${cityName}...`, true);
+    // ИСПРАВЛЕНО: конкатенация
+    addChatMessage('СИСТЕМА', 'Вы телепортируетесь в город: ' + cityName + '...', true);
 
     setTimeout(() => {
-      addChatMessage('СИСТЕМА', `Телепортация успешна! Вы теперь в городе: \${cityName}.`, true);
+      // ИСПРАВЛЕНО: конкатенация
+      addChatMessage('СИСТЕМА', 'Телепортация успешна! Вы теперь в городе: ' + cityName + '.', true);
       loadStatus();
     }, 1000);
   }
 
   // --- БОЙ В ОКРЕСТНОСТЯХ ---
-  let isFighting = false;
-  let mobHp = 50;
-  let mobAttack = 12;
+  var isFighting = false;
+  var mobHp = 50;
+  var mobAttack = 12;
 
   async function startFight() {
-    const btn = document.getElementById('btn-fight');
-    const log = document.getElementById('fightLog');
+    var btn = document.getElementById('btn-fight');
+    var log = document.getElementById('fightLog');
 
     if (!currentPlayer) {
       addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
@@ -305,16 +316,18 @@
       btn.textContent = 'Атаковать моба!';
       btn.disabled = false;
 
-      addLog(`Бой начался! Вы против моба (HP: \${mobHp}).`);
+      // ИСПРАВЛЕНО: конкатенация
+      addLog('Бой начался! Вы против моба (HP: ' + mobHp + ').');
       return;
     }
 
     // Ход игрока
-    const playerDmg = Math.max(1, Math.floor(currentPlayer.attack * (0.8 + Math.random() * 0.4)));
+    var playerDmg = Math.max(1, Math.floor(currentPlayer.attack * (0.8 + Math.random() * 0.4)));
     mobHp -= playerDmg;
-    addLog(`Вы нанесли мобу ${playerDmg} урона. У моба осталось ${mobHp} HP.`);
+    // ИСПРАВЛЕНО: конкатенация
+    addLog('Вы нанесли мобу ' + playerDmg + ' урона. У моба осталось ' + mobHp + ' HP.');
 
-    if (mobHp <= 0) {
+        if (mobHp <= 0) {
       mobHp = 0;
       isFighting = false;
       btn.disabled = true;
@@ -324,7 +337,7 @@
     }
 
     // Ход моба (сразу после удара игрока)
-    const mobDmg = Math.max(1, Math.floor(mobAttack * (0.8 + Math.random() * 0.4)));
+    var mobDmg = Math.max(1, Math.floor(mobAttack * (0.8 + Math.random() * 0.4)));
     currentPlayer.current_hp -= mobDmg;
 
     // Не даём HP уйти в минус
@@ -335,7 +348,7 @@
     // Обновляем статус на экране
     updateStatusBox();
 
-    addLog(`Моб нанёс вам ${mobDmg} урона. У вас осталось ${currentPlayer.current_hp} HP.`);
+    addLog('Моб нанёс вам ' + mobDmg + ' урона. У вас осталось ' + currentPlayer.current_hp + ' HP.');
 
     // ПРОВЕРКА НА СМЕРТЬ
     if (currentPlayer.current_hp <= 0) {
@@ -345,10 +358,10 @@
       addLog('💀 Вы погибли. Бой окончен.');
 
       // Расчёт штрафа: 5% от аден
-      const penalty = Math.floor(currentPlayer.adenas * 0.05);
+      var penalty = Math.floor(currentPlayer.adenas * 0.05);
       
       if (penalty > 0) {
-        addLog(`Вы потеряли \${penalty} аден из-за смерти.`);
+        addLog('Вы потеряли ' + penalty + ' аден из-за смерти.');
       } else {
         addLog('У вас было слишком мало аден — штраф не начислен.');
       }
@@ -361,7 +374,7 @@
   // --- ОБРАБОТКА СМЕРТИ И ТЕЛЕПОРТАЦИЯ ---
   async function handleDeath(penalty) {
     try {
-      const res = await fetch('/player-death', {
+      var res = await fetch('/player-death', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -371,7 +384,7 @@
       });
 
       if (res.ok) {
-        const data = await res.json();
+        var data = await res.json();
         addChatMessage('СИСТЕМА', data.message || 'Вы погибли и были телепортированы в город.', true);
 
         // Обновляем локальные данные игрока
@@ -387,7 +400,7 @@
         // Телепортируем на вкладку «Город»
         switchTab('city');
       } else {
-        const err = await res.json().catch(() => ({}));
+        var err = await res.json().catch(() => ({}));
         addChatMessage('СИСТЕМА', err.error || 'Ошибка при обработке смерти', true);
       }
     } catch (e) {
@@ -398,9 +411,9 @@
 
   // Вспомогательная функция для лога боя
   function addLog(text) {
-    const log = document.getElementById('fightLog');
+    var log = document.getElementById('fightLog');
     if (log) {
-      const line = document.createElement('div');
+      var line = document.createElement('div');
       line.textContent = text;
       line.style.margin = '4px 0';
       line.style.fontSize = '0.95em';
@@ -411,7 +424,7 @@
 
   // --- ОТПРАВКА ЧАТА ---
   async function sendChat() {
-    const text = chatInput.value.trim();
+    var text = chatInput.value.trim();
     if (!text) return;
     
     if (!currentPlayer || typeof currentPlayer.char_id === 'undefined') {
@@ -423,7 +436,7 @@
     chatInput.disabled = true;
 
     try {
-      const res = await fetch('/chat-send', {
+      var res = await fetch('/chat-send', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ 
@@ -436,7 +449,7 @@
         chatInput.value = '';
         loadChatMessages(); 
       } else {
-        const err = await res.json().catch(() => ({}));
+        var err = await res.json().catch(() => ({}));
         addChatMessage('СИСТЕМА', err.error || 'Не удалось отправить сообщение', true);
       }
     } catch (e) {
@@ -449,16 +462,16 @@
 
   // --- ЗАГРУЗКА ИСТОРИИ ЧАТА ---
   async function loadChatMessages() {
-    const data = await apiRequest('/chat-history?limit=50');
+    var data = await apiRequest('/chat-history?limit=50');
     
     if (!data || !Array.isArray(data)) {
       return;
     }
 
     chatMessagesBox.innerHTML = '';
-    data.forEach(msg => {
-      const sender = msg.player_name || msg.name || msg.sender || 'Unknown';
-      const text = msg.text || msg.message || '';
+    data.forEach(function(msg) {
+      var sender = msg.player_name || msg.name || msg.sender || 'Unknown';
+      var text = msg.text || msg.message || '';
       addChatMessage(sender, text, false);
     });
 
@@ -466,7 +479,7 @@
   }
 
   // Обработка нажатия Enter в поле чата
-  chatInput.addEventListener('keydown', (e) => {
+  chatInput.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
       sendChat();
     }
