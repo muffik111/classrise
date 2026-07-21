@@ -123,6 +123,13 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+@app.errorhandler(500)
+def handle_500(e):
+    # Эта строка запишет полный стек ошибки в логи Amvera
+    app.logger.error("500 ERROR DETAILS:\n%s", traceback.format_exc())
+    # Для отладки можно временно показать ошибку в браузере (в проде лучше убрать)
+    return f"<pre>{traceback.format_exc()}</pre>", 500
+
 # ==========================================
 # РОУТЫ СТРАНИЦ
 # ==========================================
