@@ -112,112 +112,131 @@ def migrate_database():
         print("✅ Колонка is_admin уже существует.")
 
     conn.close()
+logger = logging.getLogger(__name__)
+
 @app.route('/fight-action', methods=['POST'])
 def fight_action():
-    data = request.json
-    char_id = data.get('char_id')
+    # Безопасное получение JSON
+    data = request.get_json(silent=True)
+    if not data:
+        logger.warning("[FIGHT] Получен запрос без JSON")
+        return jsonify({"error": "Требуется JSON в теле запроса"}), 400
 
-    if not char_id:
+    char_id = data.get('char_id')
+    if char_id is None:
+        logger.warning(f"[FIGHT] Нет char_id в запросе: {data}")
         return jsonify({'error': 'Нет ID персонажа'}), 400
 
-    conn = get_db_connection()
+    conn = get_db()  # Используем твою функцию с row_factory
     cursor = conn.cursor()
 
-    # Получаем игрока из БД
-    cursor.execute('SELECT * FROM players WHERE id = ?', (char_id,))
-    player = cursor.fetchone()
-    if not player:
-        conn.close()
-        return jsonify({'error': 'Игрок не найден'}), 404
-
-    # Параметры моба (в будущем лучше вынести в таблицу mobs)
-    mob_hp = 50
-    mob_attack = 12
-    mob_defense = 2
-
-    current_hp = player['current_hp']
-    max_hp = player['max_hp']
-    attack = player['attack']
-    defense = player['defense']
-    adenas = player['adenas']
-    exp = player['exp']
-    location = player['location']
-
-    log_messages = []
-    is_victory = False
-    is_dead = False
-
-    # --- Ход игрока ---
-    player_dmg = max(1, int(attack * (0.8 + random.random() * 0.4)) - mob_defense)
-    mob_hp -= player_dmg
-    log_messages.append(f"Вы нанесли мобу {player_dmg} урона. У моба осталось {mob_hp} HP.")
-
-    # Проверка победы
-    if mob_hp <= 0:
-        is_victory = True
-        reward_adenas = 15
-        reward_exp = 25
-        adenas += reward_adenas
-        exp += reward_exp
-        log_messages.append(f"🎉 Победа! Моб повержен. Получено: {reward_adenas} аден, {reward_exp} EXP.")
-    else:
-        # --- Ход моба ---
-        mob_dmg = max(1, int(mob_attack * (0.8 + random.random() * 0.4)) - defense)
-        current_hp -= mob_dmg
-        log_messages.append(f"Моб нанёс вам {mob_dmg} урона. У вас осталось {current_hp} HP.")
-
-        # Проверка смерти
-        if current_hp <= 0:
-            is_dead = True
-            penalty = int(adenas * 0.05)
-            if penalty > 0:
-                adenas -= penalty
-                log_messages.append(f"💀 Вы погибли! Потеряно {penalty} аден.")
-            else:
-                log_messages.append("💀 Вы погибли!")
-
-            # Телепортация и респаун
-            current_hp = max_hp
-            location = 'city'
-            log_messages.append("Вы были телепортированы в город и воскресли.")
-
-    # Обновляем БД в транзакции
     try:
+        # Получаем персонажа из characters (все статы там)
+        cursor.execute(
+            'SELECT * FROM characters WHERE id = ?',
+            (char_id,)
+        )
+        char = cursor.fetchone()
+        if not char:
+            logger.warning(f"[FIGHT] Персонаж не найден: char_id={char_id}")
+            return jsonify({'error': 'Персонаж не найден'}), 404
+
+        # Распаковываем статы (используем .get на случай, если колонки добавятся позже)
+        current_hp = char['current_hp']
+        max_hp = char['max_hp']
+        attack = char['attack']
+        defense = char['defense']
+        adenas = char['adenas']
+        exp = char['exp']
+        location = char['location']
+        char_name = char['name']
+        char_class = char['class']
+        level = char.get('level', 1)
+        next_level_exp = char.get('next_level_exp', 100)
+
+        log_messages = []
+        is_victory = False
+        is_dead = False
+
+        # Параметры моба (потом можно вынести в отдельную таблицу mobs)
+        mob_hp = 50
+        mob_attack = 12
+        mob_defense = 2
+
+        # --- Ход игрока ---
+        player_dmg = max(1, int(attack * (0.8 + random.random() * 0.4)) - mob_defense)
+        mob_hp -= player_dmg
+        log_messages.append(f"Вы нанесли мобу {player_dmg} урона. У моба осталось {mob_hp} HP.")
+
+        # Проверка победы
+        if mob_hp <= 0:
+            is_victory = True
+            reward_adenas = 15
+            reward_exp = 25
+            adenas += reward_adenas
+            exp += reward_exp
+            log_messages.append(f"🎉 Победа! Моб повержен. Получено: {reward_adenas} аден, {reward_exp} EXP.")
+        else:
+            # --- Ход моба ---
+            mob_dmg = max(1, int(mob_attack * (0.8 + random.random() * 0.4)) - defense)
+            current_hp -= mob_dmg
+            log_messages.append(f"Моб нанёс вам {mob_dmg} урона. У вас осталось {current_hp} HP.")
+
+            # Проверка смерти
+            if current_hp <= 0:
+                is_dead = True
+                penalty = int(adenas * 0.05)
+                if penalty > 0:
+                    adenas -= penalty
+                    log_messages.append(f"💀 Вы погибли! Потеряно {penalty} аден.")
+                else:
+                    log_messages.append("💀 Вы погибли!")
+
+                # Телепортация и респаун
+                current_hp = max_hp
+                location = 'city'
+                log_messages.append("Вы были телепортированы в город и воскресли.")
+
+        # Обновляем персонажа в БД
         cursor.execute('''
-            UPDATE players
+            UPDATE characters
             SET current_hp = ?, adenas = ?, exp = ?, location = ?
             WHERE id = ?
         ''', (current_hp, adenas, exp, location, char_id))
         conn.commit()
-    except Exception as e:
+
+        response_data = {
+            'player': {
+                'id': char['id'],
+                'name': char_name,
+                'class': char_class,
+                'level': level,
+                'adenas': adenas,
+                'exp': exp,
+                'next_level_exp': next_level_exp,
+                'current_hp': current_hp,
+                'max_hp': max_hp,
+                'attack': attack,
+                'defense': defense,
+                'location': location
+            },
+            'log': '\n'.join(log_messages),
+            'is_victory': is_victory,
+            'is_dead': is_dead
+        }
+
+        logger.info(f"[FIGHT] Бой завершён для char_id={char_id}: победа={is_victory}, смерть={is_dead}")
+        return jsonify(response_data), 200
+
+    except sqlite3.Error as e:
         conn.rollback()
-        conn.close()
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"[FIGHT] Ошибка БД: {e}")
+        return jsonify({'error': 'Ошибка базы данных', 'details': str(e)}), 500
     finally:
         conn.close()
 
-    # Формируем ответ
-    response_data = {
-        'player': {
-            'id': player['id'],
-            'name': player['name'],
-            'class': player['class_name'],      # проверь название колонки в БД
-            'level': player['level'],
-            'adenas': adenas,
-            'exp': exp,
-            'next_level_exp': player['next_level_exp'],
-            'current_hp': current_hp,
-            'max_hp': max_hp,
-            'attack': attack,
-            'defense': defense,
-            'location': location
-        },
-        'log': '\n'.join(log_messages),
-        'is_victory': is_victory,
-        'is_dead': is_dead
-    }
-
     return jsonify(response_data)
+
 # ==========================================
 # ИГРОВАЯ ЛОГИКА (Заглушки, если нет файлов items.py / classes.py)
 # ==========================================
