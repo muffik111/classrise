@@ -6,6 +6,7 @@ import sqlite3
 from flask import Flask, request, jsonify, session, render_template, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 import random 
+from your_app import app, get_db, logger, login_required
 
 # --- МАРКЕР ВЕРСИИ ---
 print("=== VERSION: 2026-07-23-FIX-SYNC-FRONT-BACK-AMVERA-CLEAN-SQLITE ===")
@@ -115,6 +116,7 @@ def migrate_database():
 logger = logging.getLogger(__name__)
 
 @app.route('/fight-action', methods=['POST'])
+@login_required
 def fight_action():
     # Безопасное получение JSON
     data = request.get_json(silent=True)
@@ -127,11 +129,20 @@ def fight_action():
         logger.warning(f"[FIGHT] Нет char_id в запросе: {data}")
         return jsonify({'error': 'Нет ID персонажа'}), 400
 
-    conn = get_db()  # Используем твою функцию с row_factory
+    # Проверка типа: char_id должен быть числом
+    if not isinstance(char_id, int):
+        logger.warning(f"[FIGHT] char_id не число: {char_id}")
+        return jsonify({'error': 'char_id должен быть целым числом'}), 400
+
+    conn = get_db()
+    if conn is None:
+        logger.error("[FIGHT] Не удалось получить соединение с БД")
+        return jsonify({'error': 'Ошибка сервера: нет соединения с БД'}), 500
+
     cursor = conn.cursor()
 
     try:
-        # Получаем персонажа из characters (все статы там)
+        # Получаем персонажа из characters
         cursor.execute(
             'SELECT * FROM characters WHERE id = ?',
             (char_id,)
@@ -141,7 +152,7 @@ def fight_action():
             logger.warning(f"[FIGHT] Персонаж не найден: char_id={char_id}")
             return jsonify({'error': 'Персонаж не найден'}), 404
 
-        # Распаковываем статы (используем .get на случай, если колонки добавятся позже)
+        # Распаковываем статы безопасно
         current_hp = char['current_hp']
         max_hp = char['max_hp']
         attack = char['attack']
@@ -233,9 +244,8 @@ def fight_action():
         logger.error(f"[FIGHT] Ошибка БД: {e}")
         return jsonify({'error': 'Ошибка базы данных', 'details': str(e)}), 500
     finally:
-        conn.close()
-
-    return jsonify(response_data)
+        if conn:
+            conn.close()
 
 # ==========================================
 # ИГРОВАЯ ЛОГИКА (Заглушки, если нет файлов items.py / classes.py)
