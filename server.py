@@ -2,7 +2,7 @@ import os
 import logging
 from functools import wraps
 import sqlite3
-from flask import Flask, request, jsonify, session, render_template
+from flask import Flask, request, jsonify, session, render_template, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 
@@ -219,6 +219,11 @@ def login():
     session['char_id'] = char_id
 
     return jsonify({"ok": True, "char_id": char_id})
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.clear()  # Очищаем сессию (удаляем токен/id пользователя)
+    return '', 204   # Возвращаем пустой ответ без ошибки
 
 @app.route('/player-status')
 @login_required
