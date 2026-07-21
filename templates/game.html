@@ -276,33 +276,128 @@
       }, 1000);
     }
 
-    // --- БОЙ ---
-    async function startFight() {
-      const log = document.getElementById('fightLog');
-      log.textContent = 'Вы замахиваетесь...';
-      
-      if (!currentPlayer) {
-        log.textContent = 'Ошибка: Нет данных игрока. Обновите страницу.';
-        return;
-      }
+// --- БОЙ В ОКРЕСТНОСТЯХ ---
+let isFighting = false;
+let mobHp = 50;
+let mobAttack = 12;
 
-      const result = await apiRequest('/fight', 'POST', { char_id: currentPlayer.char_id });
+async function startFight() {
+  const btn = document.getElementById('btn-fight');
+  const log = document.getElementById('fightLog');
 
-      if (!result) return;
+  if (!currentPlayer) {
+    addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
+    return;
+  }
 
-      let msg = `Вы нанесли ${result.damage_done} урона.`;
-      if (result.is_mob_dead) msg += ' <b>Моб убит!</b>';
-      msg += ` Вы получили ${result.damage_received} урона.\n`;
-      msg += `Ваш HP: ${result.player_hp}. HP моба: ${result.mob_hp}.`;
+  if (!isFighting) {
+    // Начало нового боя
+    isFighting = true;
+    mobHp = 50;
+    log.innerHTML = '';
+    btn.textContent = 'Атаковать моба!';
+    btn.disabled = false;
 
-      log.innerHTML = msg;
-      setTimeout(loadStatus, 500); 
+    addLog(`Бой начался! Вы против моба (HP: \${mobHp}).`);
+    return;
+  }
+
+  // Ход игрока
+  const playerDmg = Math.max(1, Math.floor(currentPlayer.attack * (0.8 + Math.random() * 0.4)));
+  mobHp -= playerDmg;
+  addLog(`Вы нанесли мобу ${playerDmg} урона. У моба осталось ${mobHp} HP.`);
+
+  if (mobHp <= 0) {
+    mobHp = 0;
+    isFighting = false;
+    btn.disabled = true;
+    btn.textContent = 'Бой завершён: моб повержен!';
+    addLog('🎉 Победа! Моб повержен.');
+    // Тут можно добавить начисление опыта/адены через API
+    return;
+  }
+
+  // Ход моба (сразу после удара игрока)
+  const mobDmg = Math.max(1, Math.floor(mobAttack * (0.8 + Math.random() * 0.4)));
+  currentPlayer.current_hp -= mobDmg;
+
+  // ГЛАВНОЕ: не даём HP уйти в минус
+  if (currentPlayer.current_hp < 0) {
+    currentPlayer.current_hp = 0;
+  }
+
+  // Обновляем статус на экране
+  updateStatusBox();
+
+  addLog(`Моб нанёс вам ${mobDmg} урона. У вас осталось ${currentPlayer.current_hp} HP.`);
+
+  // ПРОВЕРКА НА СМЕРТЬ
+  if (currentPlayer.current_hp <= 0) {
+    isFighting = false;
+    btn.disabled = true;
+    btn.textContent = 'Вы погибли. Бой окончен.';
+    addLog('💀 Вы погибли. Бой окончен.');
+
+    // Расчёт штрафа: 5% от аден
+    const penalty = Math.floor(currentPlayer.gold * 0.05);
+    if (penalty > 0) {
+      addLog(`Вы потеряли \${penalty} аден из-за смерти.`);
+    } else {
+      addLog('У вас было слишком мало аден — штраф не начислен.');
     }
 
-        chatSendBtn.addEventListener('click', sendChat);
-    chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') sendChat();
+    // Отправляем штраф на сервер и телепортируем в город
+    await handleDeath(penalty);
+  }
+}
+
+// --- ОБРАБОТКА СМЕРТИ И ТЕЛЕПОРТАЦИЯ ---
+async function handleDeath(penalty) {
+  try {
+    // Списываем адены и телепортируем в город (location = 'city')
+    const res = await fetch('/player-death', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        char_id: currentPlayer.char_id,
+        penalty: penalty
+      })
     });
+
+    if (res.ok) {
+      const data = await res.json();
+      addChatMessage('СИСТЕМА', data.message || 'Вы погибли и были телепортированы в город.', true);
+
+      // Обновляем локальные данные игрока
+      currentPlayer.gold -= penalty;
+      currentPlayer.location = 'city';
+      updateStatusBox();
+
+      // Телепортируем на вкладку «Город»
+      switchTab('tab-city'); // или твоя функция переключения вкладок
+    } else {
+      const err = await res.json().catch(() => ({}));
+      addChatMessage('СИСТЕМА', err.error || 'Ошибка при обработке смерти', true);
+    }
+  } catch (e) {
+    console.error('Death handler error:', e);
+    addChatMessage('СИСТЕМА', 'Ошибка сети при обработке смерти', true);
+  }
+}
+
+// Вспомогательная функция для лога боя (если её нет)
+function addLog(text) {
+  const log = document.getElementById('fightLog');
+  if (log) {
+    const line = document.createElement('div');
+    line.textContent = text;
+    line.style.margin = '4px 0';
+    line.style.fontSize = '0.95em';
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight; // автопрокрутка
+  }
+}
+
 
     // --- ОТПРАВКА ЧАТА ---
     async function sendChat() {

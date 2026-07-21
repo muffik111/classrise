@@ -427,3 +427,50 @@ def teleport():
     except Exception as e:
         logger.error(f"Teleport error: {e}")
         return jsonify({"error": str(e)}), 500
+    
+    @app.route('/player-death', methods=['POST'])
+def player_death():
+    data = request.get_json() or {}
+    char_id = data.get('char_id')
+    penalty = data.get('penalty', 0)
+
+    if not char_id:
+        return jsonify({"error": "Неверный запрос"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Списываем адены
+        cur.execute('''
+            UPDATE characters
+            SET gold = gold - ?
+            WHERE id = ? AND gold >= ?
+        ''', (penalty, char_id, penalty))
+
+        # Если аден не хватило — ставим 0
+        if cur.rowcount == 0:
+            cur.execute('''
+                UPDATE characters
+                SET gold = 0
+                WHERE id = ?
+            ''', (char_id,))
+
+        # Телепортируем в город
+        cur.execute('''
+            UPDATE characters
+            SET location = 'city'
+            WHERE id = ?
+        ''', (char_id,))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "ok": True,
+            "message": f"Вы погибли, потеряли {penalty} аден и были телепортированы в город."
+        })
+    except Exception as e:
+        logger.error(f"Player death error: {e}")
+        return jsonify({"error": str(e)}), 500
+
