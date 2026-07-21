@@ -105,200 +105,217 @@
     </div>
   </div>
 
-  <script>
-    let currentPlayer = null;
-    const chatMessagesBox = document.getElementById('chat-messages');
-    const chatInput = document.getElementById('chat-input');
-    const chatSendBtn = document.getElementById('chat-send');
+<script>
+  let currentPlayer = null;
+  const chatMessagesBox = document.getElementById('chat-messages');
+  const chatInput = document.getElementById('chat-input');
+  const chatSendBtn = document.getElementById('chat-send');
 
-    document.addEventListener('DOMContentLoaded', () => {
-      console.log("Загрузка game.html...");
-      loadStatus(); 
-      loadChatMessages();
-      loadShop();
-    });
+  document.addEventListener('DOMContentLoaded', () => {
+    console.log("Загрузка game.html...");
+    loadStatus(); 
+    loadChatMessages();
+    loadShop();
+  });
 
-    function addChatMessage(sender, text, isSystem = false) {
-      const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-      const prefix = isSystem ? '[СИСТЕМА]' : `[${sender}]`;
-      const colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
-      const safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  function addChatMessage(sender, text, isSystem = false) {
+    const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const prefix = isSystem ? '[СИСТЕМА]' : `[${sender}]`;
+    const colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
+    // Защита от XSS
+    const safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-      const div = document.createElement('div');
-      div.innerHTML = `
-        <span class="${colorClass}">${prefix}</span>
-        <span class="chat-text">${safeText}</span>
-        <span class="chat-time">(${time})</span>
-      `;
-      chatMessagesBox.appendChild(div);
-      chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
+    const div = document.createElement('div');
+    div.innerHTML = `
+      <span class="${colorClass}">${prefix}</span>
+      <span class="chat-text">${safeText}</span>
+      <span class="chat-time">(${time})</span>
+    `;
+    chatMessagesBox.appendChild(div);
+    chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
+  }
+
+  async function apiRequest(endpoint, method = 'GET', data = null) {
+    const options = { method };
+    if (data) {
+      options.headers = {'Content-Type': 'application/json'};
+      options.body = JSON.stringify(data);
     }
-
-    async function apiRequest(endpoint, method = 'GET', data = null) {
-      const options = { method };
-      if (data) {
-        options.headers = {'Content-Type': 'application/json'};
-        options.body = JSON.stringify(data);
-      }
+    
+    try {
+      const res = await fetch(endpoint, options);
       
-      try {
-        const res = await fetch(endpoint, options);
-        
-        if (res.status === 401) {
-          addChatMessage('СИСТЕМА', 'Сессия истекла! Перенаправление на вход...', true);
-          setTimeout(() => window.location.href = '/login-page', 1500);
-          return null;
-        }
-
-        if (!res.ok) {
-          throw new Error(`Ошибка сервера: ${res.status}`);
-        }
-        return await res.json();
-      } catch (e) {
-        console.error(e);
-        addChatMessage('СИСТЕМА', e.message || 'Ошибка соединения с сервером', true);
+      if (res.status === 401) {
+        addChatMessage('СИСТЕМА', 'Сессия истекла! Перенаправление на вход...', true);
+        setTimeout(() => window.location.href = '/login-page', 1500);
         return null;
       }
-    }
 
-    // --- ЛОГАУТ (ВЫХОД) ---
-    async function logout() {
-      try {
-        // Сначала пробуем вызвать серверный роут /logout (если он есть)
-        await fetch('/logout', { method: 'POST' });
-      } catch (e) {
-        // Если роута нет — просто игнорируем ошибку и сразу редиректим
-        console.warn('Роут /logout не найден на сервере — делаем редирект без запроса');
-      } finally {
-        // Очищаем локальные данные
-        currentPlayer = null;
-        // Перенаправляем на страницу входа/регистрации
-        window.location.href = '/login-page';
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Ошибка сервера: ${res.status}`);
       }
+      return await res.json();
+    } catch (e) {
+      console.error("API Error:", e);
+      addChatMessage('СИСТЕМА', e.message || 'Ошибка соединения с сервером', true);
+      return null;
+    }
+  }
+
+  async function logout() {
+    try {
+      await fetch('/logout', { method: 'POST' });
+    } catch (e) {
+      // Если /logout нет — просто игнорируем
+    } finally {
+      currentPlayer = null;
+      window.location.href = '/login-page';
+    }
+  }
+
+  async function loadStatus() {
+    const statusBox = document.getElementById('statusBox');
+    statusBox.innerHTML = '<p>Загрузка статуса...</p>';
+    
+    const data = await apiRequest('/player-status');
+    if (!data) return; 
+
+    // ГЛАВНОЕ ИСПРАВЛЕНИЕ: явно берём id из БД и кладём в char_id
+    currentPlayer = {
+      char_id: data.id,
+      name: data.name,
+      class: data.class,
+      level: data.level,
+      adenas: data.adenas,
+      exp: data.exp,
+      next_level_exp: data.next_level_exp,
+      current_hp: data.current_hp,
+      max_hp: data.max_hp,
+      attack: data.attack,
+      defense: data.defense,
+      inventory: data.inventory
+    };
+
+    let hpPercent = Math.max(0, Math.min(100, data.current_hp / data.max_hp * 100));
+    let hpColor = data.current_hp > 0 ? '#ff4444' : 'red';
+
+    let html = `
+      <p><b>Имя:</b> ${data.name} | <b>Класс:</b> ${data.class} | <b>Ур:</b> ${data.level}</p>
+      <p><b>EXP:</b> ${data.exp} / ${data.next_level_exp || 100} | <b>Адены:</b> ${data.adenas}</p>
+      <div style="width:200px; background:#333; border:1px solid #555;">
+         <div style="width:${hpPercent}% ; height:20px; background:${hpColor};"></div>
+      </div>
+      <p><b>HP:</b> ${data.current_hp}/${data.max_hp} | <b>ATK:</b> ${data.attack} | <b>DEF:</b> ${data.defense}</p>
+      <p><b>Инвентарь:</b> [${data.inventory.join(', ') || 'пусто'}]</p>
+    `;
+    statusBox.innerHTML = html;
+  }
+
+  async function startFight() {
+    const log = document.getElementById('fightLog');
+    log.textContent = 'Вы замахиваетесь...';
+    
+    if (!currentPlayer) {
+      log.textContent = 'Ошибка: Нет данных игрока. Обновите страницу.';
+      return;
     }
 
-    async function loadStatus() {
-      const statusBox = document.getElementById('statusBox');
-      statusBox.innerHTML = '<p>Загрузка статуса...</p>';
-      
-      const data = await apiRequest('/player-status');
-      if (!data) return; 
+    const result = await apiRequest('/fight', 'POST', { char_id: currentPlayer.char_id });
 
-      currentPlayer = data; 
+    if (!result) return;
 
-      let html = `
-        <p><b>Имя:</b> ${data.name} | <b>Класс:</b> ${data.class} | <b>Ур:</b> ${data.level}</p>
-        <p><b>EXP:</b> ${data.exp} / ${data.next_level_exp || 100} | <b>Адены:</b> ${data.adenas}</p>
-        <div style="width:200px; background:#333; border:1px solid #555;">
-           <div style="width:${Math.max(0, Math.min(100, data.current_hp / data.max_hp * 100))}% ; height:20px; ${data.current_hp > 0 ? 'background:#ff4444;' : 'background:red;'}"></div>
-        </div>
-        <p><b>HP:</b> ${data.current_hp}/${data.max_hp} | <b>ATK:</b> ${data.attack} | <b>DEF:</b> ${data.defense}</p>
-        <p><b>Инвентарь:</b> [${data.inventory.join(', ') || 'пусто'}]</p>
-      `;
-      statusBox.innerHTML = html;
+    let msg = `Вы нанесли ${result.damage_done} урона.`;
+    if (result.is_mob_dead) msg += ' <b>Моб убит!</b>';
+    msg += ` Вы получили ${result.damage_received} урона.\n`;
+    msg += `Ваш HP: ${result.player_hp}. HP моба: ${result.mob_hp}.`;
+
+    log.innerHTML = msg;
+    setTimeout(loadStatus, 500); 
+  }
+
+  chatSendBtn.addEventListener('click', sendChat);
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendChat();
+  });
+
+  async function sendChat() {
+    const text = chatInput.value.trim();
+    if (!text) return;
+    
+    // Теперь это условие реально проверяется
+    if (!currentPlayer || typeof currentPlayer.char_id === 'undefined') {
+      addChatMessage('СИСТЕМА', 'Сначала войдите в игру и дождитесь загрузки статуса!', true);
+      return;
     }
 
-    async function startFight() {
-      const log = document.getElementById('fightLog');
-      log.textContent = 'Вы замахиваетесь...';
-      
-      if (!currentPlayer) {
-        log.textContent = 'Ошибка: Нет данных игрока. Обновите страницу.';
-        return;
+    chatSendBtn.disabled = true;
+    chatInput.disabled = true;
+
+    try {
+      const res = await fetch('/chat-send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ 
+          char_id: currentPlayer.char_id, 
+          text: text 
+        })
+      });
+
+      if (res.ok) {
+        chatInput.value = '';
+        loadChatMessages(); 
+      } else {
+        const err = await res.json().catch(() => ({}));
+        addChatMessage('СИСТЕМА', err.error || 'Не удалось отправить сообщение', true);
       }
+    } catch (e) {
+      addChatMessage('СИСТЕМА', 'Ошибка сети', true);
+    } finally {
+      chatSendBtn.disabled = false;
+      chatInput.disabled = false;
+    }
+  }
 
-      const result = await apiRequest('/fight', 'POST', { char_id: currentPlayer.char_id });
-
-      if (!result) return;
-
-      let msg = `Вы нанесли ${result.damage_done} урона.`;
-      if (result.is_mob_dead) msg += ' <b>Моб убит!</b>';
-      msg += ` Вы получили ${result.damage_received} урона.\n`;
-      msg += `Ваш HP: ${result.player_hp}. HP моба: ${result.mob_hp}.`;
-
-      log.innerHTML = msg;
-      setTimeout(loadStatus, 500); 
+  async function loadChatMessages() {
+    const data = await apiRequest('/chat-history?limit=30');
+    
+    if (!data || !Array.isArray(data)) {
+      return;
     }
 
-    chatSendBtn.addEventListener('click', sendChat);
-    chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') sendChat();
+    chatMessagesBox.innerHTML = '';
+    data.forEach(msg => {
+      // Сервер отдаёт player_name из JOIN, поэтому используем msg.player_name
+      const sender = msg.player_name || msg.name || 'Unknown';
+      const text = msg.text || msg.message || '';
+      addChatMessage(sender, text, false);
     });
+  }
 
-    async function sendChat() {
-      const text = chatInput.value.trim();
-      if (!text) return;
-      if (!currentPlayer || !currentPlayer.char_id) {
-        addChatMessage('СИСТЕМА', 'Сначала войдите в игру и дождитесь загрузки статуса!', true);
-        return;
-      }
-
-      chatSendBtn.disabled = true;
-      chatInput.disabled = true;
-
-      try {
-        const res = await fetch('/chat-send', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ 
-            char_id: currentPlayer.char_id, 
-            text: text 
-          })
-        });
-
-        if (res.ok) {
-          chatInput.value = '';
-          loadChatMessages(); 
-        } else {
-          const err = await res.json().catch(() => ({}));
-          addChatMessage('СИСТЕМА', err.error || 'Не удалось отправить сообщение', true);
-        }
-      } catch (e) {
-        addChatMessage('СИСТЕМА', 'Ошибка сети', true);
-      } finally {
-        chatSendBtn.disabled = false;
-        chatInput.disabled = false;
-      }
-    }
-
-    async function loadChatMessages() {
-      const data = await apiRequest('/chat-history?limit=30');
-      
-      if (!data || !Array.isArray(data)) {
-        return;
-      }
-
-      chatMessagesBox.innerHTML = '';
-      data.forEach(msg => {
-        const sender = msg.name || msg.sender || 'Unknown';
-        const text = msg.text || msg.message || '';
-        addChatMessage(sender, text, false);
-      });
-    }
-
-    function loadShop() {
-      const items = [
-        {id: 1, name: "Ржавый меч", type: "weapon", atk: 5, def: 0, price: 100},
-        {id: 2, name: "Стальной клинок", type: "weapon", atk: 12, def: 0, price: 250},
-        {id: 3, name: "Лук новичка", type: "weapon", atk: 8, def: 0, price: 180},
-        {id: 4, name: "Деревянный щит", type: "armor", atk: 0, def: 6, price: 150},
-        {id: 5, name: "Тяжёлый щит", type: "armor", atk: 0, def: 14, price: 320},
-      ];
-      const tbody = document.getElementById('shopTableBody');
-      tbody.innerHTML = '';
-      items.forEach(item => {
-        tbody.insertAdjacentHTML('beforeend', `
-          <tr>
-            <td>${item.id}</td>
-            <td>${item.name}</td>
-            <td>${item.type}</td>
-            <td>${item.atk}</td>
-            <td>${item.def}</td>
-            <td>${item.price} аден</td>
-          </tr>
-        `);
-      });
-    }
-  </script>
+  function loadShop() {
+    const items = [
+      {id: 1, name: "Ржавый меч", type: "weapon", atk: 5, def: 0, price: 100},
+      {id: 2, name: "Стальной клинок", type: "weapon", atk: 12, def: 0, price: 250},
+      {id: 3, name: "Лук новичка", type: "weapon", atk: 8, def: 0, price: 180},
+      {id: 4, name: "Деревянный щит", type: "armor", atk: 0, def: 6, price: 150},
+      {id: 5, name: "Тяжёлый щит", type: "armor", atk: 0, def: 14, price: 320},
+    ];
+    const tbody = document.getElementById('shopTableBody');
+    tbody.innerHTML = '';
+    items.forEach(item => {
+      tbody.insertAdjacentHTML('beforeend', `
+        <tr>
+          <td>${item.id}</td>
+          <td>${item.name}</td>
+          <td>${item.type}</td>
+          <td>${item.atk}</td>
+          <td>${item.def}</td>
+          <td>${item.price} аден</td>
+        </tr>
+      `);
+    });
+  }
+</script>
 </body>
 </html>
