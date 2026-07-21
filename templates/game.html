@@ -339,80 +339,67 @@ async function loadStatus() {
   var mobAttack = 12;
 
   async function startFight() {
-    var btn = document.getElementById('btn-fight');
-    var log = document.getElementById('fightLog');
+  const btn = document.getElementById('btn-fight');
+  const log = document.getElementById('fightLog');
 
-    if (!currentPlayer) {
-      addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
-      return;
-    }
-
-    if (!isFighting) {
-      // Начало нового боя
-      isFighting = true;
-      mobHp = 50;
-      log.innerHTML = '';
-      btn.textContent = 'Атаковать моба!';
-      btn.disabled = false;
-      addLog('Бой начался! Вы против моба (HP: 50).');
-      return;
-    }
-
-    // --- РАСЧЁТ УРОНА ИГРОКА ---
-    var mobDefense = 2; // Защита обычного моба
-    // Формула: Атака * (разброс 0.8-1.2) минус защита врага. Минимум 1 урон.
-    var playerDmg = Math.max(1, Math.floor(currentPlayer.attack * (0.8 + Math.random() * 0.4)) - mobDefense);
-    
-    mobHp -= playerDmg;
-    addLog('Вы нанесли мобу ' + playerDmg + ' урона. У моба осталось ' + mobHp + ' HP.');
-
-    if (mobHp <= 0) {
-      mobHp = 0;
-      isFighting = false;
-      btn.disabled = true;
-      btn.textContent = 'Бой завершён: моб повержен!';
-      addLog('🎉 Победа! Моб повержен.');
-
-      var rewardAdenas = 15;
-      var rewardExp = 25;
-
-      currentPlayer.adenas += rewardAdenas;
-      currentPlayer.exp += rewardExp;
-      savePlayerState();
-      updateStatusBox();
-      addChatMessage('СИСТЕМА', 'Победа! Получено: ' + rewardAdenas + ' аден, ' + rewardExp + ' EXP.', true);
-
-      await sendRewardToServer(rewardAdenas, rewardExp);
-      return;
-    }
-
-    // --- РАСЧЁТ УРОНА МОБА (С УЧЁТОМ ТВОЕЙ ЗАЩИТЫ) ---
-    // Формула: Атака моба * (разброс 0.8-1.2) минус твоя защита.
-    var mobDmg = Math.max(1, Math.floor(mobAttack * (0.8 + Math.random() * 0.4)) - currentPlayer.defense);
-    
-    currentPlayer.current_hp -= mobDmg;
-    if (currentPlayer.current_hp < 0) currentPlayer.current_hp = 0;
-    savePlayerState();
-    updateStatusBox();
-    addLog('Моб нанёс вам ' + mobDmg + ' урона. У вас осталось ' + currentPlayer.current_hp + ' HP.');
-
-    // ПРОВЕРКА НА СМЕРТЬ
-    if (currentPlayer.current_hp <= 0) {
-      isFighting = false;
-      btn.disabled = true;
-      btn.textContent = 'Вы погибли. Бой окончен.';
-      addLog('💀 Вы погибли. Бой окончен.');
-
-      var penalty = Math.floor(currentPlayer.adenas * 0.05);
-      if (penalty > 0) {
-        addLog('Вы потеряли ' + penalty + ' аден из-за смерти.');
-      } else {
-        addLog('У вас было слишком мало аден — штраф не начислен.');
-      }
-
-      await handleDeath(penalty);
-    }
+  if (!currentPlayer) {
+    addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
+    return;
   }
+
+  // Блокируем кнопку, чтобы нельзя было спамить кликами
+  btn.disabled = true;
+  btn.textContent = 'Расчёт боя...';
+
+  try {
+    const res = await fetch('/fight-action', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ char_id: currentPlayer.char_id })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+
+      // Обновляем состояние игрока данными с сервера
+      currentPlayer = data.player;
+      savePlayerState(); // localStorage — только кэш, не источник истины
+      updateStatusBox();
+
+      // Выводим лог боя, который посчитал сервер
+      log.innerHTML = '';
+      data.log.split('\n').forEach(line => {
+        if (line.trim()) addLog(line);
+      });
+
+      if (data.is_dead) {
+        btn.disabled = true;
+        btn.textContent = 'Вы погибли. Телепортация в город...';
+        setTimeout(() => switchTab('city'), 2000);
+      } else if (data.is_victory) {
+        btn.disabled = true;
+        btn.textContent = 'Моб повержен!';
+        // Сброс кнопки через 3 секунды
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = 'Атаковать моба!';
+          log.innerHTML = '';
+        }, 3000);
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      addChatMessage('СИСТЕМА', err.error || 'Ошибка сервера', true);
+      btn.disabled = false;
+      btn.textContent = 'Атаковать моба!';
+    }
+  } catch (e) {
+    console.error(e);
+    addChatMessage('СИСТЕМА', 'Нет связи с сервером', true);
+    btn.disabled = false;
+    btn.textContent = 'Атаковать моба!';
+  }
+}
+
 
   // --- ОБРАБОТКА СМЕРТИ И ТЕЛЕПОРТАЦИЯ (ИСПРАВЛЕНО) ---
   async function handleDeath(penalty) {

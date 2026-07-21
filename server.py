@@ -291,30 +291,43 @@ def register():
     cur = conn.cursor()
     try:
         pwd_hash = generate_password_hash(password)
-        
-        # 1. Создаем аккаунт
-        cur.execute('INSERT INTO accounts (username, password_hash) VALUES (?, ?)',
-                    (username, pwd_hash))
+
+        # 1. Проверяем, сколько аккаунтов уже существует
+        cur.execute('SELECT COUNT(*) FROM accounts')
+        account_count = cur.fetchone()[0]
+
+        # Если это самый первый аккаунт — назначаем админа
+        is_admin = 1 if account_count == 0 else 0
+
+        # 2. Создаем аккаунт с флагом админа
+        cur.execute(
+            'INSERT INTO accounts (username, password_hash, is_admin) VALUES (?, ?, ?)',
+            (username, pwd_hash, is_admin)
+        )
         account_id = cur.lastrowid
 
-        # 2. Получаем статы класса
+        # 3. Получаем статы класса
         stats = get_class_stats(p_class)
 
-        # 3. Создаем персонажа
+        # 4. Создаем персонажа
         cur.execute('''
             INSERT INTO characters (account_id, name, class, attack, defense, location)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (account_id, char_name, p_class, stats.get("attack", 5), stats.get("defense", 3), 'city'))
 
         conn.commit()
-        return jsonify({"ok": True, "message": "Аккаунт и персонаж созданы"})
+        return jsonify({
+            "ok": True,
+            "message": "Аккаунт и персонаж созданы",
+            "is_admin": bool(is_admin)  # удобно сразу видеть в ответе
+        })
 
     except sqlite3.IntegrityError as e:
         conn.rollback()
         err_str = str(e).lower()
         if 'username' in err_str:
             return jsonify({"error": "Такой логин уже занят"}), 409
-        if 'name' in err_str:
+        if 'name' in err_str:  # если уникальность на name в characters
             return jsonify({"error": "Такое имя персонажа уже занято"}), 409
         return jsonify({"error": "Ошибка регистрации"}), 500
     finally:
