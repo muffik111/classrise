@@ -163,22 +163,20 @@
     // Скрываем все вкладки
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     
-    // Показываем нужную (ИСПРАВЛЕНО: используем конкатенацию вместо шаблонной строки)
+    // Показываем нужную
     const target = document.getElementById('tab-' + tabName);
     if (target) target.classList.add('active');
   }
 
   function addChatMessage(sender, text, isSystem = false) {
-    const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    var time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     
-    // ИСПРАВЛЕНО: конкатенация вместо `${}`
     var prefix = isSystem ? '[СИСТЕМА]' : '[' + sender + ']';
     
     var colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
     var safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
     var div = document.createElement('div');
-    // ИСПРАВЛЕНО: полная сборка HTML через +
     div.innerHTML = 
       '<span class="' + colorClass + '">' + prefix + '</span>' +
       '<span class="chat-text">' + safeText + '</span>' +
@@ -206,7 +204,6 @@
 
       if (!res.ok) {
         var errData = await res.json().catch(() => ({}));
-        // ИСПРАВЛЕНО: конкатенация
         throw new Error(errData.error || 'Ошибка сервера: ' + res.status);
       }
       return await res.json();
@@ -243,7 +240,8 @@
       current_hp: data.current_hp,
       max_hp: data.max_hp,
       attack: data.attack,
-      defense: data.defense
+      defense: data.defense,
+      location: data.location || 'city'
     };
 
     updateStatusBox();
@@ -283,17 +281,15 @@
       return;
     }
 
-    // ИСПРАВЛЕНО: конкатенация
     addChatMessage('СИСТЕМА', 'Вы телепортируетесь в город: ' + cityName + '...', true);
 
     setTimeout(() => {
-      // ИСПРАВЛЕНО: конкатенация
       addChatMessage('СИСТЕМА', 'Телепортация успешна! Вы теперь в городе: ' + cityName + '.', true);
       loadStatus();
     }, 1000);
   }
 
-  // --- БОЙ В ОКРЕСТНОСТЯХ ---
+  // --- БОЙ В ОКРЕСТНОСТЯХ (ИСПРАВЛЕННАЯ ВЕРСИЯ) ---
   var isFighting = false;
   var mobHp = 50;
   var mobAttack = 12;
@@ -315,7 +311,6 @@
       btn.textContent = 'Атаковать моба!';
       btn.disabled = false;
 
-      // ИСПРАВЛЕНО: конкатенация
       addLog('Бой начался! Вы против моба (HP: ' + mobHp + ').');
       return;
     }
@@ -323,15 +318,26 @@
     // Ход игрока
     var playerDmg = Math.max(1, Math.floor(currentPlayer.attack * (0.8 + Math.random() * 0.4)));
     mobHp -= playerDmg;
-    // ИСПРАВЛЕНО: конкатенация
     addLog('Вы нанесли мобу ' + playerDmg + ' урона. У моба осталось ' + mobHp + ' HP.');
 
-        if (mobHp <= 0) {
+    if (mobHp <= 0) {
       mobHp = 0;
       isFighting = false;
       btn.disabled = true;
       btn.textContent = 'Бой завершён: моб повержен!';
       addLog('🎉 Победа! Моб повержен.');
+
+      // Победа: начисляем награду
+            var rewardAdenas = 15;
+      var rewardExp = 25;
+
+      currentPlayer.adenas += rewardAdenas;
+      currentPlayer.exp += rewardExp;
+
+      updateStatusBox();
+      addChatMessage('СИСТЕМА', 'Победа! Получено: ' + rewardAdenas + ' аден, ' + rewardExp + ' EXP.', true);
+
+      await sendRewardToServer(rewardAdenas, rewardExp);
       return;
     }
 
@@ -339,14 +345,11 @@
     var mobDmg = Math.max(1, Math.floor(mobAttack * (0.8 + Math.random() * 0.4)));
     currentPlayer.current_hp -= mobDmg;
 
-    // Не даём HP уйти в минус
     if (currentPlayer.current_hp < 0) {
       currentPlayer.current_hp = 0;
     }
 
-    // Обновляем статус на экране
     updateStatusBox();
-
     addLog('Моб нанёс вам ' + mobDmg + ' урона. У вас осталось ' + currentPlayer.current_hp + ' HP.');
 
     // ПРОВЕРКА НА СМЕРТЬ
@@ -356,21 +359,18 @@
       btn.textContent = 'Вы погибли. Бой окончен.';
       addLog('💀 Вы погибли. Бой окончен.');
 
-      // Расчёт штрафа: 5% от аден
       var penalty = Math.floor(currentPlayer.adenas * 0.05);
-      
       if (penalty > 0) {
         addLog('Вы потеряли ' + penalty + ' аден из-за смерти.');
       } else {
         addLog('У вас было слишком мало аден — штраф не начислен.');
       }
 
-      // Отправляем штраф на сервер и телепортируем в город
       await handleDeath(penalty);
     }
   }
 
-  // --- ОБРАБОТКА СМЕРТИ И ТЕЛЕПОРТАЦИЯ ---
+  // --- ОБРАБОТКА СМЕРТИ И ТЕЛЕПОРТАЦИЯ (ИСПРАВЛЕНО) ---
   async function handleDeath(penalty) {
     try {
       var res = await fetch('/player-death', {
@@ -378,7 +378,8 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           char_id: currentPlayer.char_id,
-          penalty: penalty
+          penalty: penalty,
+          is_dead: true
         })
       });
 
@@ -386,253 +387,102 @@
         var data = await res.json();
         addChatMessage('СИСТЕМА', data.message || 'Вы погибли и были телепортированы в город.', true);
 
-        // Обновляем локальные данные игрока
-        currentPlayer.adenas -= penalty;
+        // Локально обновляем данные так, как их вернул сервер
+        if (data.current_hp !== undefined) {
+          currentPlayer.current_hp = data.current_hp;
+        }
+        if (data.adenas !== undefined) {
+          currentPlayer.adenas = data.adenas;
+        }
         currentPlayer.location = 'city';
-        
-        // ВОССТАНАВЛИВАЕМ HP ДО МАКСИМУМА
-        currentPlayer.current_hp = currentPlayer.max_hp;
-        
-        // Перерисовываем статус (теперь будет 50/50)
-        updateStatusBox();
 
-        // Телепортируем на вкладку «Город»
+        // Гарантированно восстанавливаем HP до max (на случай рассинхрона)
+        currentPlayer.current_hp = currentPlayer.max_hp;
+
+        updateStatusBox();
         switchTab('city');
       } else {
         var err = await res.json().catch(() => ({}));
         addChatMessage('СИСТЕМА', err.error || 'Ошибка при обработке смерти', true);
+        // Даже при ошибке делаем респаун локально, чтобы игрок мог играть дальше
+        currentPlayer.current_hp = currentPlayer.max_hp;
+        updateStatusBox();
+        switchTab('city');
       }
     } catch (e) {
       console.error('Death handler error:', e);
       addChatMessage('СИСТЕМА', 'Ошибка сети при обработке смерти', true);
+      currentPlayer.current_hp = currentPlayer.max_hp;
+      updateStatusBox();
+      switchTab('city');
     }
   }
 
-  // Вспомогательная функция для лога боя
-  function addLog(text) {
-    var log = document.getElementById('fightLog');
-    if (log) {
-      var line = document.createElement('div');
-      line.textContent = text;
-      line.style.margin = '4px 0';
-      line.style.fontSize = '0.95em';
-      log.appendChild(line);
-      log.scrollTop = log.scrollHeight;
-    }
-  }
-
-  // --- ОТПРАВКА ЧАТА ---
-  async function sendChat() {
-    var text = chatInput.value.trim();
-    if (!text) return;
-    
-    if (!currentPlayer || typeof currentPlayer.char_id === 'undefined') {
-      addChatMessage('СИСТЕМА', 'Сначала войдите в игру и дождитесь загрузки статуса!', true);
-      return;
-    }
-
-    chatSendBtn.disabled = true;
-    chatInput.disabled = true;
-
+  // Отдельная функция для отправки награды при победе (чтобы сервер тоже знал)
+  async function sendRewardToServer(adenas, exp) {
     try {
-      var res = await fetch('/chat-send', {
+      var res = await fetch('/fight-result', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ 
-          char_id: currentPlayer.char_id, 
-          text: text 
+        body: JSON.stringify({
+          char_id: currentPlayer.char_id,
+          final_adenas: currentPlayer.adenas,
+          final_exp: currentPlayer.exp,
+          is_dead: false
         })
       });
-
-      if (res.ok) {
-        chatInput.value = '';
-        loadChatMessages(); 
-      } else {
-        var err = await res.json().catch(() => ({}));
-        addChatMessage('СИСТЕМА', err.error || 'Не удалось отправить сообщение', true);
+      if (!res.ok) {
+        console.warn('Не удалось отправить награду на сервер, но локально уже начислено.');
       }
     } catch (e) {
-      addChatMessage('СИСТЕМА', 'Ошибка сети', true);
-    } finally {
-      chatSendBtn.disabled = false;
-      chatInput.disabled = false;
+      console.warn('Ошибка отправки награды:', e);
     }
   }
 
-  // --- ЗАГРУЗКА ИСТОРИИ ЧАТА ---
-  async function loadChatMessages() {
-    var data = await apiRequest('/chat-history?limit=50');
-    
-    if (!data || !Array.isArray(data)) {
-      return;
-    }
-
-    chatMessagesBox.innerHTML = '';
-    data.forEach(function(msg) {
-      var sender = msg.player_name || msg.name || msg.sender || 'Unknown';
-      var text = msg.text || msg.message || '';
-      addChatMessage(sender, text, false);
-    });
-
-    chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
+  function addLog(text) {
+    var fightLog = document.getElementById('fightLog');
+    if (!fightLog) return;
+    fightLog.innerHTML += '<p>' + text + '</p>';
+    fightLog.scrollTop = fightLog.scrollHeight;
   }
 
-  // Обработка нажатия Enter в поле чата
+  // --- ЧАТ ---
+  function loadChatMessages() {
+    // Можно реализовать загрузку истории чата с сервера, пока заглушка
+    addChatMessage('СИСТЕМА', 'Чат подключён. Добро пожаловать в ClassRise!', true);
+  }
+
   chatInput.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
-      sendChat();
+      e.preventDefault();
+      sendChatMessage();
     }
   });
 
-  // Обработка клика по кнопке «Отправить»
-  chatSendBtn.addEventListener('click', sendChat);
-</script>
-    <!-- Твои другие элементы (инвентарь, чат и т.д.) -->
-<div id="player-panel" style="border: 1px solid #ccc; padding: 15px; margin: 10px; max-width: 400px;">
-  <h3>Персонаж</h3>
-  <p><strong>Имя:</strong> <span id="player-name"></span></p>
-  <p><strong>Класс:</strong> <span id="player-class"></span></p>
-  <p><strong>Локация:</strong> <span id="player-location"></span></p>
-  <p><strong>Уровень:</strong> <span id="player-level"></span></p>
-  <p><strong>Адены:</strong> <span id="player-adenas"></span></p>
+  chatSendBtn.addEventListener('click', sendChatMessage);
 
-  <div>
-    <strong>HP:</strong> <span id="player-hp"></span>
-    <div style="width: 100%; background: #eee; margin-top: 5px; height: 20px; border: 1px solid #999;">
-      <div id="hp-bar" style="height: 100%; background: #d9534f; width: 0%; transition: width 0.3s;"></div>
-    </div>
-  </div>
+  async function sendChatMessage() {
+    var text = chatInput.value.trim();
+    if (!text || !currentPlayer) return;
 
-  <br>
-  <button id="btn-fight" style="padding: 10px 20px; font-size: 16px;">Сразиться с мобом</button>
-</div>
+    var sender = currentPlayer.name || 'Игрок';
+    addChatMessage(sender, text, false);
+    chatInput.value = '';
 
-    <!-- Сюда вставляем весь JS-код целиком -->
-    <script>
-      let player = { /* ... весь код из примера ... */ };
-      // ... функции loadPlayer, updateUI, startFight, saveFightResult ...
-      document.addEventListener('DOMContentLoaded', () => {
-        const btnFight = document.getElementById('btn-fight');
-        if (btnFight) {
-          btnFight.addEventListener('click', startFight);
-        }
-        loadPlayer();
+    try {
+      await fetch('/chat-send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          char_id: currentPlayer.char_id,
+          message: text
+        })
       });
-    </script>
-
-  </body>
-</html>
-
+    } catch (e) {
+      console.error('Chat send error:', e);
+    }
+  }
+</script>
 </body>
 </html>
-<script>
-  // Глобальное состояние игрока (заполняется при загрузке страницы)
-  let player = {
-    hp: 0,
-    maxHp: 0,
-    adenas: 0,
-    level: 1,
-    exp: 0,
-    nextLevelExp: 100,
-    attack: 5,
-    defense: 3,
-    name: '',
-    class: '',
-    location: 'city',
-    inventory: []
-  };
 
-  // Загрузка данных игрока при старте
-  async function loadPlayer() {
-    const res = await fetch('/player-status');
-    if (!res.ok) {
-      alert('Ошибка загрузки данных игрока. Перезайдите в игру.');
-      window.location.href = '/login-page';
-      return;
-    }
-    const data = await res.json();
-    player = data;
-    updateUI();
-  }
-
-  function updateUI() {
-    document.getElementById('player-name').textContent = player.name;
-    document.getElementById('player-class').textContent = player.class;
-    document.getElementById('player-hp').textContent = `${player.hp}/${player.maxHp}`;
-    document.getElementById('hp-bar').style.width = `${player.hp_percent}%`;
-    document.getElementById('player-adenas').textContent = player.adenas;
-    document.getElementById('player-level').textContent = player.level;
-    document.getElementById('player-location').textContent = player.location;
-  }
-
-  // Пример боя: простой расчёт урона (подстроится под твои механики)
-  async function startFight() {
-    // Пример моба (можно брать из API или генерировать)
-    const mob = { hp: 40, attack: 8, expReward: 25, adenaReward: 15 };
-
-    // Простая симуляция боя (игрок бьёт первым)
-    let playerHp = player.hp;
-    let mobHp = mob.hp;
-
-    while (playerHp > 0 && mobHp > 0) {
-      // Игрок бьёт моба
-      const playerDmg = Math.max(1, player.attack - mob.defense / 2);
-      mobHp -= playerDmg;
-
-      if (mobHp <= 0) break;
-
-      // Моб бьёт игрока
-      const mobDmg = Math.max(1, mob.attack - player.defense / 2);
-      playerHp -= mobDmg;
-    }
-
-    const isDead = playerHp <= 0;
-    const finalHp = isDead ? 0 : playerHp;
-    const finalAdenas = player.adenas + (isDead ? 0 : mob.adenaReward);
-    const finalExp = player.exp + (isDead ? 0 : mob.expReward);
-
-    console.log('Результат боя:', { finalHp, finalAdenas, finalExp, isDead });
-
-    await saveFightResult(finalHp, finalAdenas, finalExp, isDead);
-  }
-
-  async function saveFightResult(finalHp, finalAdenas, finalExp, isDead) {
-    const res = await fetch('/fight-result', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        final_hp: finalHp,
-        final_adenas: finalAdenas,
-        final_exp: finalExp,
-        is_dead: isDead  // <-- это критично для респауна на сервере
-      })
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert('Ошибка сохранения боя: ' + (err.error || 'Неизвестная ошибка'));
-      return;
-    }
-
-    const result = await res.json();
-
-    // После сохранения обязательно обновляем данные игрока
-    await loadPlayer();
-
-    if (result.final_hp <= 0) {
-      alert('Вы погибли! Вы возрождены.');
-      // Тут можно показать экран смерти/респауна
-    } else {
-      alert('Бой завершён! Получено опыта и аден.');
-    }
-  }
-
-  // Кнопка боя (должна быть в HTML)
-  document.addEventListener('DOMContentLoaded', () => {
-    const btnFight = document.getElementById('btn-fight');
-    if (btnFight) {
-      btnFight.addEventListener('click', startFight);
-    }
-    loadPlayer();
-  });
-</script>

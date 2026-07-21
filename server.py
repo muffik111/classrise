@@ -422,55 +422,59 @@ def teleport():
 # Фронтенд полностью считает бой, сервер только фиксирует итог.
 # Это защищает от накрутки урона/опыта.
 # ==========================================
-@app.route('/fight-result', methods=['POST'])
-@login_required
-def fight_result():
-    data = request.get_json() or {}
-    char_id = session.get('char_id')
+@app.route('/player-death', methods=['POST'])
+def player_death():
+    data = request.get_json()
+    char_id = data.get('char_id')
+    penalty = data.get('penalty', 0)
 
-    final_hp = data.get('final_hp')
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем max_hp, чтобы восстановить HP
+    cur.execute('SELECT max_hp FROM characters WHERE id = ?', (char_id,))
+    row = cur.fetchone()
+    max_hp = row['max_hp'] if row else 50
+
+    # Обновляем адены (штраф) и восстанавливаем HP
+    cur.execute(
+        'UPDATE characters SET adenas = adenas - ?, current_hp = ? WHERE id = ?',
+        (penalty, max_hp, char_id)
+    )
+
+    # Телепортация в город
+    cur.execute('UPDATE characters SET location = ? WHERE id = ?', ('city', char_id))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'ok': True,
+        'message': 'Вы погибли и возродились в городе.',
+        'current_hp': max_hp
+    })
+
+
+@app.route('/fight-result', methods=['POST'])
+def fight_result():
+    data = request.get_json()
+    char_id = data.get('char_id')
     final_adenas = data.get('final_adenas')
     final_exp = data.get('final_exp')
-    is_dead = data.get('is_dead', False)
 
-    # Проверка, что фронтенд прислал все обязательные поля
-    if final_hp is None or final_adenas is None or final_exp is None:
-        return jsonify({"error": "Неверные данные: нужны final_hp, final_adenas, final_exp"}), 400
+    conn = get_db()
+    cur = conn.cursor()
 
-    try:
-        conn = get_db()
-        cur = conn.cursor()
+    cur.execute(
+        'UPDATE characters SET adenas = ?, exp = ? WHERE id = ?',
+        (final_adenas, final_exp, char_id)
+    )
 
-        # Сначала обновляем основные значения
-        cur.execute('''
-            UPDATE characters
-            SET current_hp = ?, adenas = ?, exp = ?
-            WHERE id = ?
-        ''', (final_hp, final_adenas, final_exp, char_id))
+    conn.commit()
+    conn.close()
 
-        # Если персонаж умер — сбрасываем HP в max_hp (респ)
-        if is_dead:
-            # Получаем max_hp из БД, чтобы не доверять фронту
-            cur.execute('SELECT max_hp FROM characters WHERE id = ?', (char_id,))
-            row = cur.fetchone()
-            max_hp_val = row['max_hp'] if row else 50
-            cur.execute('UPDATE characters SET current_hp = ? WHERE id = ?', (max_hp_val, char_id))
-            logger.info(f"Бой: персонаж char_id={char_id} погиб и воскрес (HP={max_hp_val})")
+    return jsonify({'ok': True})
 
-        conn.commit()
-        conn.close()
-
-        return jsonify({
-            "ok": True,
-            "message": "Результат боя сохранён",
-            "final_hp": final_hp,
-            "final_adenas": final_adenas,
-            "final_exp": final_exp
-        })
-
-    except Exception as e:
-        logger.error(f"Fight result error: {e}")
-        return jsonify({"error": "Ошибка сохранения результата боя"}), 500
 
 
 # ==========================================
