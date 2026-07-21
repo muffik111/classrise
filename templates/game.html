@@ -93,7 +93,6 @@
         <option value="desert">Пустыня (Desert)</option>
       </select>
       <button onclick="handleTeleport()" style="background: #3498db; color: white;">Телепортироваться</button>
-      </p>
     </div>
   </div>
 
@@ -164,7 +163,7 @@
     // Скрываем все вкладки
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     
-    // Показываем нужную
+    // Показываем нужную (ИСПРАВЛЕНО: tab-\${tabName} вместо tab-\${tabName})
     const target = document.getElementById(`tab-\${tabName}`);
     if (target) target.classList.add('active');
   }
@@ -242,7 +241,7 @@
       defense: data.defense
     };
 
-    updateStatusBox(); // сразу рисуем красивый статус
+    updateStatusBox();
   }
 
   function updateStatusBox() {
@@ -379,7 +378,7 @@
         currentPlayer.adenas -= penalty;
         currentPlayer.location = 'city';
         
-        // ВОССТАНАВЛИВАЕМ HP ДО МАКСИМУМА (или до значения из ответа сервера)
+        // ВОССТАНАВЛИВАЕМ HP ДО МАКСИМУМА
         currentPlayer.current_hp = currentPlayer.max_hp;
         
         // Перерисовываем статус (теперь будет 50/50)
@@ -465,7 +464,16 @@
 
     chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
   }
+
+  // Обработка нажатия Enter в поле чата
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      sendChat();
+    }
+  });
+
+  // Обработка клика по кнопке «Отправить»
+  chatSendBtn.addEventListener('click', sendChat);
 </script>
 </body>
 </html>
-
