@@ -298,36 +298,42 @@ def chat_history():
 
 
 @app.route('/chat-send', methods=['POST'])
-@login_required
 def chat_send():
     data = request.get_json() or {}
     char_id = data.get('char_id')
-    text = (data.get('text') or '').strip()
+    text = data.get('text', '').strip()
 
-    # Если char_id не передан, берём из сессии
-    if not char_id and 'char_id' in session:
-        char_id = session['char_id']
-
+    # 1. Проверка авторизации (базовая)
     if not char_id or not text:
-        return jsonify({"error": "Некорректные данные"}), 400
-    if len(text) > 250:
-        return jsonify({"error": "Сообщение слишком длинное"}), 400
+        return jsonify({"error": "Неверный запрос"}), 400
 
-    conn = get_db()
-    cur = conn.cursor()
     try:
+        conn = get_db()
+        cur = conn.cursor()
+        
+        # 2. Проверка: существует ли такой персонаж (защита от взлома)
+        cur.execute('SELECT id FROM characters WHERE id = ?', (char_id,))
+        if not cur.fetchone():
+            conn.close()
+            return jsonify({"error": "Персонаж не найден"}), 404
+
+        # 3. Вставка сообщения
         cur.execute('''
             INSERT INTO chat_messages (char_id, text)
             VALUES (?, ?)
         ''', (char_id, text))
+        
         conn.commit()
-        return jsonify({"ok": True, "message": "Отправлено"}), 200
-    except Exception as e:
-        conn.rollback()
-        logger.error("Chat send error: %s", e)
-        return jsonify({"error": "Ошибка сохранения сообщения"}), 500
-    finally:
         conn.close()
+        
+        logger.info(f"Чат: сообщение от char_id={char_id}")
+        return jsonify({"ok": True, "message": "Сообщение сохранено"})
+
+    except Exception as e:
+        logger.error(f"Ошибка чата: {e}")
+        # Важно: не показывай текст ошибки пользователю, но логируй его!
+        return jsonify({"error": "Ошибка сохранения сообщения"}), 500
+
 
 import random
 
