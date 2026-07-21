@@ -550,11 +550,3 @@ def player_levelup():
     except Exception as e:
         logger.error(f"Levelup error: {e}")
         return jsonify({"error": "Ошибка прокачки"}), 500
-
-
-if __name__ == '__main__':
-    # Для Amvera этот блок не используется (там запуск через gunicorn/wsgi),
-    # но полезен для локальной отладки.
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"Запуск сервера на порту {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)

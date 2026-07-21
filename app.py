@@ -76,6 +76,3 @@ def update_player():
     
     db.session.commit()
     return jsonify(player.to_dict())
-
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
