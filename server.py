@@ -396,3 +396,34 @@ def fight():
         "aden_gained": aden_gain
     }
     return jsonify(result)
+
+@app.route('/teleport', methods=['POST'])
+def teleport():
+    data = request.get_json() or {}
+    char_id = data.get('char_id')
+    target_city = data.get('target_city')
+
+    if not char_id or not target_city:
+        return jsonify({"error": "Неверный запрос"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Обновляем локацию игрока (нужно, чтобы в characters была колонка location)
+        cur.execute('''
+            UPDATE characters
+            SET location = ?
+            WHERE id = ?
+        ''', (target_city, char_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "ok": True,
+            "message": f"Вы телепортировались в {target_city}"
+        })
+    except Exception as e:
+        logger.error(f"Teleport error: {e}")
+        return jsonify({"error": str(e)}), 500

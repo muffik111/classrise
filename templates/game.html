@@ -2,10 +2,24 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>ClassRise — Игровой процесс</title>
+  <title>ClassRise — Город и окрестности</title>
   <style>
-    body { font-family: 'Courier New', Courier, monospace; max-width: 900px; margin: 20px auto; padding: 0 15px; background: #121212; color: #e0e0e0; }
-    .section { border: 1px solid #444; padding: 15px; margin-bottom: 20px; border-radius: 8px; background: #1e1e1e; }
+    body { font-family: 'Courier New', Courier, monospace; max-width: 960px; margin: 20px auto; padding: 0 15px; background: #121212; color: #e0e0e0; }
+    
+    /* Вкладки */
+    .tabs { margin-bottom: 15px; border-bottom: 2px solid #444; overflow: hidden; }
+    .tab-btn {
+      background: #2b2b2b; color: #aaa; padding: 10px 20px; border: none; cursor: pointer;
+      border-right: 1px solid #444; margin-right: -1px;
+    }
+    .tab-btn:hover { background: #3a3a3a; color: #fff; }
+    .tab-btn.active { background: #ffd700; color: #000; font-weight: bold; }
+
+    /* Секции вкладок */
+    .tab-content { display: none; padding: 15px; border: 1px solid #444; background: #1e1e1e; min-height: 200px; }
+    .tab-content.active { display: block; }
+
+    .section { margin-bottom: 20px; }
     h3 { margin-top: 0; color: #ffd700; border-bottom: 1px solid #555; padding-bottom: 5px; }
     
     button { padding: 8px 16px; cursor: pointer; margin-right: 8px; background: #3498db; color: white; border: none; border-radius: 4px; font-family: inherit; }
@@ -13,15 +27,10 @@
     button:disabled { background: #555; cursor: not-allowed; }
     input, select { padding: 6px; margin-right: 8px; border: 1px solid #555; background: #000; color: #fff; }
 
-    /* Кнопка ВЫЙТИ — отдельный стиль */
-    .btn-logout {
-      background: #c0392b;
-      float: right;
-      margin-bottom: 10px;
-    }
+    .btn-logout { float: right; background: #c0392b; margin-bottom: 10px; }
     .btn-logout:hover { background: #a93226; }
     
-    .log { background: #000; padding: 10px; border: 1px solid #333; min-height: 100px; font-family: monospace; white-space: pre-wrap; color: #0f0; overflow-y: auto; max-height: 200px; }
+    .log { background: #000; padding: 10px; border: 1px solid #333; min-height: 120px; font-family: monospace; white-space: pre-wrap; color: #0f0; overflow-y: auto; }
     
     #chat-panel {
       margin-top: 24px;
@@ -31,7 +40,7 @@
       border-radius: 6px;
     }
     #chat-messages {
-      height: 300px; /* Чуть выше, чтобы было просторнее */
+      height: 250px;
       overflow-y: auto;
       background: #000;
       padding: 8px;
@@ -49,27 +58,81 @@
 </head>
 <body>
 
-  <h1 style="color: #ffd700;">ClassRise: Текстовая MMORPG</h1>
+  <h1 style="color: #ffd700;">ClassRise: Город и окрестности</h1>
 
   <!-- КНОПКА ВЫЙТИ -->
   <button class="btn-logout" onclick="logout()">Выйти из игры</button>
 
-  <!-- Статус героя (БЕЗ инвентаря) -->
+  <!-- СТАТУС ГЕРОЯ (всегда виден) -->
   <div class="section">
     <h3>Статус героя</h3>
     <button onclick="loadStatus()" id="btn-status">Обновить статус</button>
     <div id="statusBox"></div>
   </div>
 
-  <!-- Бой -->
-  <div class="section">
-    <h3>Бой</h3>
+  <!-- ВКЛАДКИ -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('city')">Город</button>
+    <button class="tab-btn" onclick="switchTab('outskirts')">Окрестности</button>
+    <button class="tab-btn" onclick="switchTab('shop')">Магазин</button>
+    <button class="tab-btn" onclick="switchTab('smith')">Кузница</button>
+  </div>
+
+  <!-- СОДЕРЖИМОЕ ВКЛАДОК -->
+
+  <!-- Вкладка: ГОРОД -->
+  <div id="tab-city" class="tab-content active">
+    <h3>Центр города</h3>
+    <p>Выберите действие:</p>
+    
+    <div class="section">
+      <h4>🗺 Телепортация в другой город</h4>
+      <select id="teleport-city">
+        <option value="capital">Столица (Capital)</option>
+        <option value="port">Порт (Port)</option>
+        <option value="desert">Пустыня (Desert)</option>
+      </select>
+      <button onclick="handleTeleport()">Телепортироваться</button>
+      <p style="font-size:0.9em; color:#777;">(Пока только имитация: будет сообщение в чат и смена локации в БД)</p>
+    </div>
+
+    <div class="section">
+      <h4>Куда пойти?</h4>
+      <button onclick="switchTab('outskirts')" style="background:#2ecc71;">→ В окрестности (бой)</button>
+      <button onclick="switchTab('shop')" style="background:#f1c40f;">→ В магазин</button>
+      <button onclick="switchTab('smith')" style="background:#e67e22;">→ В кузницу</button>
+    </div>
+  </div>
+
+  <!-- Вкладка: ОКРЕСТНОСТИ (БОЙ) -->
+  <div id="tab-outskirts" class="tab-content">
+    <h3>Окрестности города — Бой</h3>
     <p>Сразитесь с обычным мобом (HP: 50). Механика: вы бьёте → моб бьёт в ответ.</p>
     <button onclick="startFight()" id="btn-fight">Атаковать моба!</button>
     <div id="fightLog" class="log"></div>
   </div>
 
-  <!-- ЧАТ -->
+  <!-- Вкладка: МАГАЗИН -->
+  <div id="tab-shop" class="tab-content">
+    <h3>Магазин торговца</h3>
+    <p style="color:#777;">Здесь будет список товаров и покупка. Пока заглушка.</p>
+    <div style="border:1px dashed #555; padding:20px; text-align:center; color:#555;">
+      [МАГАЗИН: В РАЗРАБОТКЕ]<br>
+      Скоро: зелья, оружие, броня.
+    </div>
+  </div>
+
+  <!-- Вкладка: КУЗНИЦА -->
+  <div id="tab-smith" class="tab-content">
+    <h3>Кузница мастера</h3>
+    <p style="color:#777;">Здесь будет починка, улучшение, крафт. Пока заглушка.</p>
+    <div style="border:1px dashed #555; padding:20px; text-align:center; color:#555;">
+      [КУЗНИЦА: В РАЗРАБОТКЕ]<br>
+      Скоро: заточка, ремонт, крафт.
+    </div>
+  </div>
+
+  <!-- ЧАТ (всегда внизу) -->
   <div id="chat-panel">
     <h4 style="margin: 0 0 8px 0; color: #888;">Общий чат</h4>
     <div id="chat-messages"></div>
@@ -91,11 +154,25 @@
       loadChatMessages();
     });
 
+    // --- ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК ---
+    function switchTab(tabName) {
+      // Убираем active у кнопок
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      // Добавляем active нажатой кнопке
+      event.target.classList.add('active');
+
+      // Скрываем все вкладки
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      
+      // Показываем нужную
+      const target = document.getElementById(`tab-${tabName}`);
+      if (target) target.classList.add('active');
+    }
+
     function addChatMessage(sender, text, isSystem = false) {
       const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
       const prefix = isSystem ? '[СИСТЕМА]' : `[${sender}]`;
       const colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
-      // Защита от XSS
       const safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
       const div = document.createElement('div');
@@ -136,19 +213,14 @@
       }
     }
 
-    // --- ЛОГАУТ (ВЫХОД) ---
     async function logout() {
-      try {
-        await fetch('/logout', { method: 'POST' });
-      } catch (e) {
-        // Если роута нет — просто игнорируем ошибку
-      } finally {
+      try { await fetch('/logout', { method: 'POST' }); } catch (e) {}
+      finally {
         currentPlayer = null;
         window.location.href = '/login-page';
       }
     }
 
-    // --- ЗАГРУЗКА СТАТУСА (БЕЗ ИНВЕНТАРЯ) ---
     async function loadStatus() {
       const statusBox = document.getElementById('statusBox');
       statusBox.innerHTML = '<p>Загрузка статуса...</p>';
@@ -156,7 +228,6 @@
       const data = await apiRequest('/player-status');
       if (!data) return; 
 
-      // ГЛАВНОЕ: теперь НЕ берем inventory из данных
       currentPlayer = {
         char_id: data.id,
         name: data.name,
@@ -185,6 +256,33 @@
       statusBox.innerHTML = html;
     }
 
+    // --- ТЕЛЕПОРТАЦИЯ (ЗАГЛУШКА ПОД СЕРВЕР) ---
+    async function handleTeleport() {
+      const citySelect = document.getElementById('teleport-city');
+      const cityName = citySelect.options[citySelect.selectedIndex].text;
+
+      if (!currentPlayer) {
+        addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
+        return;
+      }
+
+      addChatMessage('СИСТЕМА', `Вы телепортируетесь в город: ${cityName}...`, true);
+
+      // Здесь позже будет реальный запрос к серверу:
+      /*
+      const res = await apiRequest('/teleport', 'POST', {
+        char_id: currentPlayer.char_id,
+        target_city: cityName
+      });
+      */
+
+      setTimeout(() => {
+        addChatMessage('СИСТЕМА', `Телепортация успешна! Вы теперь в городе: ${cityName}.`, true);
+        // Можно дополнительно обновить статус, если телепорт меняет статы
+        loadStatus();
+      }, 1000);
+    }
+
     // --- БОЙ ---
     async function startFight() {
       const log = document.getElementById('fightLog');
@@ -208,7 +306,7 @@
       setTimeout(loadStatus, 500); 
     }
 
-    chatSendBtn.addEventListener('click', sendChat);
+        chatSendBtn.addEventListener('click', sendChat);
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') sendChat();
     });
@@ -253,7 +351,7 @@
 
     // --- ЗАГРУЗКА ИСТОРИИ ЧАТА ---
     async function loadChatMessages() {
-      const data = await apiRequest('/chat-history?limit=30');
+      const data = await apiRequest('/chat-history?limit=50');
       
       if (!data || !Array.isArray(data)) {
         return;
@@ -261,11 +359,16 @@
 
       chatMessagesBox.innerHTML = '';
       data.forEach(msg => {
-        const sender = msg.player_name || msg.name || 'Unknown';
+        // В зависимости от того, как сервер отдаёт имя, используем подходящее поле
+        const sender = msg.player_name || msg.name || msg.sender || 'Unknown';
         const text = msg.text || msg.message || '';
         addChatMessage(sender, text, false);
       });
+
+      // Автопрокрутка вниз после загрузки
+      chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
     }
   </script>
 </body>
 </html>
+
