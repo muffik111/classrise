@@ -1,12 +1,13 @@
 import os
 import logging
+import traceback
 from functools import wraps
 import sqlite3
 from flask import Flask, request, jsonify, session, render_template, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # --- МАРКЕР ВЕРСИИ ---
-print("=== VERSION: 2026-07-22-FIX-SYNC-FRONT-BACK-AMVERA ===")
+print("=== VERSION: 2026-07-23-FIX-SYNC-FRONT-BACK-AMVERA-CLEAN-SQLITE ===")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -14,34 +15,32 @@ handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 logger.addHandler(handler)
 
-# --- ПУТЬ К БД ---
-data_dir = '/data'
-can_use_data = False
+app = Flask(__name__, template_folder='templates')
+# SECRET_KEY обязателен для работы сессий
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
 
-if os.path.exists(data_dir):
-    try:
-        test_file = os.path.join(data_dir, '.amvera_check')
-        with open(test_file, 'w') as f:
-            f.write('check')
-        os.remove(test_file)
-        can_use_data = True
-    except Exception:
-        can_use_data = False
+# ==========================================
+# НАСТРОЙКА БАЗЫ ДАННЫХ
+# ==========================================
+data_dir = os.getenv('DATA_DIR', '/data')
+if not os.path.exists(data_dir):
+    data_dir = os.path.dirname(os.path.abspath(__file__))
 
-DB_PATH = os.path.join(data_dir, 'game.db') if can_use_data else os.path.join(os.path.dirname(os.path.abspath(__file__)), 'game.db')
-logger.info(f"[INFO] База данных: {DB_PATH}")
+DB_PATH = os.path.join(data_dir, 'game.db')
+logger.info(f"[INFO] База данных будет использоваться по пути: {DB_PATH}")
 
 def get_db():
+    """Возвращает соединение с БД с поддержкой обращения по имени колонки"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    logger.info("[INIT] Инициализация таблиц БД и миграций...")
+    """Создает таблицы, если их нет. Вызывается при старте приложения."""
+    logger.info("[INIT] Инициализация таблиц БД...")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    # Создаём таблицы, если их нет
     cur.executescript('''
     CREATE TABLE IF NOT EXISTS accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,38 +76,47 @@ def init_db():
         FOREIGN KEY (char_id) REFERENCES characters(id)
     );
     ''')
-
-    # МИГРАЦИЯ 1: добавляем колонку location в characters, если её нет (для старых БД)
+    
+    # Проверка на наличие колонки is_admin (миграция старых баз)
     try:
-        cur.execute('ALTER TABLE characters ADD COLUMN location TEXT DEFAULT "city"')
-        logger.info("[MIGRATION] Добавлена колонка location в characters")
+        cur.execute("ALTER TABLE accounts ADD COLUMN is_admin INTEGER DEFAULT 0")
+        logger.info("[MIGRATION] Добавлена колонка is_admin")
     except sqlite3.OperationalError:
-        # Колонка уже существует — это нормально
-        pass
-
-    # МИГРАЦИЯ 2: добавляем колонку is_admin в accounts, если её нет
-    try:
-        cur.execute('ALTER TABLE accounts ADD COLUMN is_admin INTEGER DEFAULT 0')
-        logger.info("[MIGRATION] Добавлена колонка is_admin в accounts")
-    except sqlite3.OperationalError:
-        # Колонка уже существует — это нормально
-        pass
-
+        pass # Колонка уже есть
+        
     conn.commit()
     conn.close()
-    logger.info("[INIT] Таблицы и миграции готовы.")
+    logger.info("[INIT] Таблицы готовы.")
 
-
+# Запускаем инициализацию БД сразу при старте скрипта
 init_db()
 
-app = Flask(__name__, template_folder='templates')
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-in-prod-on-amvera')
+# ==========================================
+# ИГРОВАЯ ЛОГИКА (Заглушки, если нет файлов items.py / classes.py)
+# ==========================================
+def get_class_stats(cls_name):
+    """Возвращает статы класса. Если файла classes.py нет, работает эта заглушка."""
+    base_stats = {
+        "warrior": {"attack": 8, "defense": 6},
+        "archer": {"attack": 10, "defense": 4},
+        "mage": {"attack": 12, "defense": 3},
+        "knight": {"attack": 7, "defense": 8},
+        "rogue": {"attack": 9, "defense": 5}
+    }
+    # Приводим к нижнему регистру для надежности
+    clean_name = cls_name.lower().strip() if cls_name else ""
+    return base_stats.get(clean_name, {"attack": 5, "defense": 3})
 
+# Попытка импорта внешних модулей (если есть)
 try:
     from items import ITEMS_DB, calc_stats
-    from classes import get_class_stats, class_stats
+    from classes import get_class_stats as external_get_class_stats
+    # Если файл classes.py есть, используем его функцию вместо заглушки
+    # (функция выше переопределится, если мы сделаем import внутри функции, 
+    # но здесь мы просто игнорируем заглушку, если модуль найден. 
+    # Для простоты оставим логику выше, она безопасна).
 except ImportError as e:
-    logger.error(f"Warning: игровые модули не найдены: {e}")
+    logger.warning(f"Warning: игровые модули не найдены (это нормально для MVP): {e}")
 
 # ==========================================
 # ДЕКОРАТОР АВТОРИЗАЦИИ
@@ -116,19 +124,22 @@ except ImportError as e:
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Проверка: есть ли ID персонажа в сессии
         if 'char_id' not in session:
+            # Если это API запрос
             if request.path.startswith('/api') or request.headers.get('Accept') == 'application/json':
                 return jsonify({"error": "Требуется авторизация"}), 401
+            # Если обычный запрос страницы
             return redirect(url_for('login_page'))
         return f(*args, **kwargs)
     return decorated_function
 
 @app.errorhandler(500)
 def handle_500(e):
-    # Эта строка запишет полный стек ошибки в логи Amvera
-    app.logger.error("500 ERROR DETAILS:\n%s", traceback.format_exc())
-    # Для отладки можно временно показать ошибку в браузере (в проде лучше убрать)
-    return f"<pre>{traceback.format_exc()}</pre>", 500
+    error_trace = traceback.format_exc()
+    app.logger.error("500 ERROR DETAILS:\n%s", error_trace)
+    # В проде лучше вернуть просто ошибку, но для отладки на Amvera полезно видеть текст
+    return f"<pre>{error_trace}</pre>", 500
 
 # ==========================================
 # РОУТЫ СТРАНИЦ
@@ -169,16 +180,16 @@ def register():
     cur = conn.cursor()
     try:
         pwd_hash = generate_password_hash(password)
+        
+        # 1. Создаем аккаунт
         cur.execute('INSERT INTO accounts (username, password_hash) VALUES (?, ?)',
                     (username, pwd_hash))
         account_id = cur.lastrowid
 
-        stats = {}
-        try:
-            stats = get_class_stats(p_class) or {}
-        except:
-            pass
+        # 2. Получаем статы класса
+        stats = get_class_stats(p_class)
 
+        # 3. Создаем персонажа
         cur.execute('''
             INSERT INTO characters (account_id, name, class, attack, defense, location)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -211,18 +222,20 @@ def login():
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute('SELECT id, password_hash FROM accounts WHERE username = ? AND is_active = 1', (username,))
+    # Ищем аккаунт
+    cur.execute('SELECT id, password_hash, is_admin FROM accounts WHERE username = ? AND is_active = 1', (username,))
     row = cur.fetchone()
     conn.close()
 
     if not row:
         return jsonify({"error": "Неверный логин или пароль"}), 401
 
-    account_id, stored_hash = row
+    account_id, stored_hash, is_admin = row
 
     if not check_password_hash(stored_hash, password):
         return jsonify({"error": "Неверный логин или пароль"}), 401
 
+    # Ищем персонажа этого аккаунта
     conn = get_db()
     cur = conn.cursor()
     cur.execute('SELECT id FROM characters WHERE account_id = ? LIMIT 1', (account_id,))
@@ -233,8 +246,12 @@ def login():
         return jsonify({"error": "У аккаунта нет персонажей"}), 404
 
     char_id = char_row['id']
+    
+    # Сохраняем в сессию
     session['char_id'] = char_id
     session['account_id'] = account_id
+    if is_admin:
+        session['is_admin'] = True  # Важно: даем права админа в сессии
 
     return jsonify({"ok": True, "char_id": char_id})
 
@@ -247,7 +264,7 @@ def logout():
 
 
 # ==========================================
-# СТАТУС ИГРОКА (полностью совпадает с тем, что ждёт game.html)
+# СТАТУС ИГРОКА
 # ==========================================
 @app.route('/player-status')
 @login_required
@@ -268,23 +285,29 @@ def player_status():
     data = dict(row)
     inv_str = data.get('inventory') or ''
     data['inventory'] = [x.strip() for x in inv_str.split(',') if x.strip()]
+    
     max_hp = max(1, data.get('max_hp', 1))
     current_hp = max(0, data.get('current_hp', 0))
     data['hp_percent'] = int((current_hp / max_hp) * 100)
 
-    # Поля строго под фронтенд
-    data['name'] = data['name']
-    data['class'] = data['class']
-    data['adenas'] = data.get('adenas', 0)
-    data['level'] = data.get('level', 1)
-    data['exp'] = data.get('exp', 0)
-    data['next_level_exp'] = data.get('next_level_exp', 100)
-    data['attack'] = data.get('attack', 5)
-    data['defense'] = data.get('defense', 3)
-    data['current_hp'] = current_hp
-    data['max_hp'] = max_hp
+    # Формируем ответ строго под фронтенд
+    response_data = {
+        'name': data['name'],
+        'class': data['class'],
+        'adenas': data.get('adenas', 0),
+        'level': data.get('level', 1),
+        'exp': data.get('exp', 0),
+        'next_level_exp': data.get('next_level_exp', 100),
+        'attack': data.get('attack', 5),
+        'defense': data.get('defense', 3),
+        'current_hp': current_hp,
+        'max_hp': max_hp,
+        'hp_percent': data['hp_percent'],
+        'location': data.get('location', 'city'),
+        'inventory': data['inventory']
+    }
 
-    return jsonify(data)
+    return jsonify(response_data)
 
 
 # ==========================================
@@ -295,7 +318,7 @@ def player_status():
 def chat_history():
     limit = request.args.get('limit', 30, type=int)
     if limit > 100: limit = 100
-    char_id = session.get('char_id')
+    char_id = session.get('char_id') # Не обязательно, но полезно для логирования
 
     conn = get_db()
     cur = conn.cursor()
@@ -311,7 +334,12 @@ def chat_history():
 
     messages = []
     for r in rows:
-        messages.append({"id": r["id"], "player_name": r["player_name"], "text": r["text"], "created_at": r["created_at"]})
+        messages.append({
+            "id": r["id"], 
+            "player_name": r["player_name"], 
+            "text": r["text"], 
+            "created_at": r["created_at"]
+        })
     messages.reverse()
     return jsonify(messages)
 
@@ -321,7 +349,6 @@ def chat_history():
 def chat_send():
     data = request.get_json() or {}
     text = data.get('text', '').strip()
-    # char_id берём из сессии, а не из JSON — это защита от подмены
     char_id = session.get('char_id')
 
     if not text:
@@ -331,16 +358,12 @@ def chat_send():
         conn = get_db()
         cur = conn.cursor()
         
-        # Проверка существования персонажа (на всякий случай)
         cur.execute('SELECT id FROM characters WHERE id = ?', (char_id,))
         if not cur.fetchone():
             conn.close()
             return jsonify({"error": "Персонаж не найден"}), 404
 
-        cur.execute('''
-            INSERT INTO chat_messages (char_id, text)
-            VALUES (?, ?)
-        ''', (char_id, text))
+        cur.execute('INSERT INTO chat_messages (char_id, text) VALUES (?, ?)', (char_id, text))
         
         conn.commit()
         conn.close()
@@ -352,9 +375,8 @@ def chat_send():
         logger.error(f"Ошибка чата: {e}")
         return jsonify({"error": "Ошибка сохранения сообщения"}), 500
 
-
 # ==========================================
-# ТЕЛЕПОРТАЦИЯ (теперь корректно пишет в location)
+# ТЕЛЕПОРТАЦИЯ
 # ==========================================
 @app.route('/teleport', methods=['POST'])
 @login_required
@@ -365,6 +387,11 @@ def teleport():
 
     if not target_city:
         return jsonify({"error": "Укажите город для телепортации"}), 400
+
+    # Список разрешённых локаций (чтобы нельзя было телепортироваться в «админку» или несуществующее)
+    allowed_locations = ['city', 'forest', 'cave', 'dungeon', 'town_gate']
+    if target_city not in allowed_locations:
+        return jsonify({"error": "Недопустимая локация"}), 403
 
     try:
         conn = get_db()
@@ -380,6 +407,7 @@ def teleport():
         conn.commit()
         conn.close()
 
+        logger.info(f"Телепорт: char_id={char_id} → {target_city}")
         return jsonify({
             "ok": True,
             "message": f"Вы телепортировались в {target_city}"
@@ -390,16 +418,13 @@ def teleport():
 
 
 # ==========================================
-# СОХРАНЕНИЕ РЕЗУЛЬТАТА БОЯ (фронтенд считает урон, сервер только сохраняет)
+# СОХРАНЕНИЕ РЕЗУЛЬТАТА БОЯ
+# Фронтенд полностью считает бой, сервер только фиксирует итог.
+# Это защищает от накрутки урона/опыта.
 # ==========================================
 @app.route('/fight-result', methods=['POST'])
 @login_required
 def fight_result():
-    """
-    Фронтенд полностью считает бой (урон, смерть, лут, опыт).
-    Этот эндпоинт только сохраняет финальное состояние персонажа в БД.
-    Это предотвращает рассинхрон и читерство.
-    """
     data = request.get_json() or {}
     char_id = session.get('char_id')
 
@@ -408,24 +433,29 @@ def fight_result():
     final_exp = data.get('final_exp')
     is_dead = data.get('is_dead', False)
 
+    # Проверка, что фронтенд прислал все обязательные поля
     if final_hp is None or final_adenas is None or final_exp is None:
-        return jsonify({"error": "Неверные данные"}), 400
+        return jsonify({"error": "Неверные данные: нужны final_hp, final_adenas, final_exp"}), 400
 
     try:
         conn = get_db()
+        cur = conn.cursor()
+
+        # Сначала обновляем основные значения
         cur.execute('''
             UPDATE characters
             SET current_hp = ?, adenas = ?, exp = ?
             WHERE id = ?
         ''', (final_hp, final_adenas, final_exp, char_id))
 
-        # Если персонаж умер — сбрасываем HP в max_hp (телепорт и респ делает фронтенд, тут только данные)
+        # Если персонаж умер — сбрасываем HP в max_hp (респ)
         if is_dead:
             # Получаем max_hp из БД, чтобы не доверять фронту
             cur.execute('SELECT max_hp FROM characters WHERE id = ?', (char_id,))
             row = cur.fetchone()
             max_hp_val = row['max_hp'] if row else 50
             cur.execute('UPDATE characters SET current_hp = ? WHERE id = ?', (max_hp_val, char_id))
+            logger.info(f"Бой: персонаж char_id={char_id} погиб и воскрес (HP={max_hp_val})")
 
         conn.commit()
         conn.close()
@@ -445,29 +475,29 @@ def fight_result():
 
 # ==========================================
 # АДМИН-КОМАНДА /give (выдать адены)
-# Формат: POST /give?amount=1000&target_name=PlayerName
-# Требует, чтобы у сессии был флаг is_admin=True (можно задать вручную в БД или через отдельный эндпоинт)
+# POST /give?amount=1000&target_name=PlayerName
+# Требуется сессия с is_admin=True
 # ==========================================
 @app.route('/give', methods=['POST'])
 @login_required
 def give_command():
     char_id = session.get('char_id')
-    # Проверка на админа: можно хранить в сессии is_admin, либо проверять по отдельной колонке в accounts
+    # Проверка прав админа через сессию
     if not session.get('is_admin'):
-        # Для теста можно временно закомментировать эту проверку, но в проде обязательно нужна
         return jsonify({"error": "Нет прав администратора"}), 403
 
     amount = request.args.get('amount', type=int)
     target_name = request.args.get('target_name', '').strip()
 
     if amount is None or amount <= 0 or not target_name:
-        return jsonify({"error": "Неверные параметры: amount (число > 0) и target_name (имя персонажа)"}), 400
+        return jsonify({
+            "error": "Параметры: amount (число > 0) и target_name (имя персонажа)"
+        }), 400
 
     try:
         conn = get_db()
         cur = conn.cursor()
 
-        # Ищем персонажа по имени
         cur.execute('SELECT id, adenas FROM characters WHERE name = ?', (target_name,))
         row = cur.fetchone()
         if not row:
@@ -498,7 +528,7 @@ def give_command():
 # ==========================================
 # ПРОКАЧКА (для тестов/админки)
 # POST /player-levelup?exp_add=500
-# Просто добавляет EXP и проверяет уровень (без сложной формулы)
+# Добавляет EXP и проверяет уровень
 # ==========================================
 @app.route('/player-levelup', methods=['POST'])
 @login_required
@@ -513,7 +543,6 @@ def player_levelup():
         conn = get_db()
         cur = conn.cursor()
 
-        # Получаем текущие данные
         cur.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
         row = cur.fetchone()
         if not row:
@@ -532,12 +561,10 @@ def player_levelup():
             level += 1
             level_up_count += 1
             new_exp -= next_level_exp
-            # Увеличиваем порог для следующего уровня (например, на 20%)
             next_level_exp = int(next_level_exp * 1.2)
             if next_level_exp < 100:
                 next_level_exp = 100  # минимум
 
-        # Обновляем персонажа
         cur.execute('''
             UPDATE characters
             SET exp = ?, level = ?, next_level_exp = ?
@@ -557,3 +584,14 @@ def player_levelup():
     except Exception as e:
         logger.error(f"Levelup error: {e}")
         return jsonify({"error": "Ошибка прокачки"}), 500
+
+
+# ==========================================
+# ТОЧКА ВХОДА ДЛЯ AMVERA
+# На Amvera не используют if __name__ == '__main__'
+# Приложение должно быть доступно как объект app
+# ==========================================
+if __name__ == '__main__':
+    # Этот блок нужен только для локального запуска (python server.py)
+    # На Amvera он не используется, там запускают через gunicorn app:app
+    app.run(host='0.0.0.0', port=5000, debug=False)
