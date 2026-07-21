@@ -260,7 +260,7 @@
       : 0;
     
     var hpColor = currentPlayer.current_hp > 0 ? '#ff4444' : 'red';
-    
+
     var html = 
       '<p>Имя: <b>' + currentPlayer.name + '</b> | Класс: <b>' + (currentPlayer.class || 'Unknown') + '</b> | Ур: <b>' + currentPlayer.level + '</b></p>' +
       '<p>EXP: ' + currentPlayer.exp + ' / ' + (currentPlayer.next_level_exp || currentPlayer.max_exp) + ' | Адены: ' + currentPlayer.adenas + '</p>' +
@@ -487,5 +487,152 @@
   // Обработка клика по кнопке «Отправить»
   chatSendBtn.addEventListener('click', sendChat);
 </script>
+    <!-- Твои другие элементы (инвентарь, чат и т.д.) -->
+<div id="player-panel" style="border: 1px solid #ccc; padding: 15px; margin: 10px; max-width: 400px;">
+  <h3>Персонаж</h3>
+  <p><strong>Имя:</strong> <span id="player-name"></span></p>
+  <p><strong>Класс:</strong> <span id="player-class"></span></p>
+  <p><strong>Локация:</strong> <span id="player-location"></span></p>
+  <p><strong>Уровень:</strong> <span id="player-level"></span></p>
+  <p><strong>Адены:</strong> <span id="player-adenas"></span></p>
+
+  <div>
+    <strong>HP:</strong> <span id="player-hp"></span>
+    <div style="width: 100%; background: #eee; margin-top: 5px; height: 20px; border: 1px solid #999;">
+      <div id="hp-bar" style="height: 100%; background: #d9534f; width: 0%; transition: width 0.3s;"></div>
+    </div>
+  </div>
+
+  <br>
+  <button id="btn-fight" style="padding: 10px 20px; font-size: 16px;">Сразиться с мобом</button>
+</div>
+
+    <!-- Сюда вставляем весь JS-код целиком -->
+    <script>
+      let player = { /* ... весь код из примера ... */ };
+      // ... функции loadPlayer, updateUI, startFight, saveFightResult ...
+      document.addEventListener('DOMContentLoaded', () => {
+        const btnFight = document.getElementById('btn-fight');
+        if (btnFight) {
+          btnFight.addEventListener('click', startFight);
+        }
+        loadPlayer();
+      });
+    </script>
+
+  </body>
+</html>
+
 </body>
 </html>
+<script>
+  // Глобальное состояние игрока (заполняется при загрузке страницы)
+  let player = {
+    hp: 0,
+    maxHp: 0,
+    adenas: 0,
+    level: 1,
+    exp: 0,
+    nextLevelExp: 100,
+    attack: 5,
+    defense: 3,
+    name: '',
+    class: '',
+    location: 'city',
+    inventory: []
+  };
+
+  // Загрузка данных игрока при старте
+  async function loadPlayer() {
+    const res = await fetch('/player-status');
+    if (!res.ok) {
+      alert('Ошибка загрузки данных игрока. Перезайдите в игру.');
+      window.location.href = '/login-page';
+      return;
+    }
+    const data = await res.json();
+    player = data;
+    updateUI();
+  }
+
+  function updateUI() {
+    document.getElementById('player-name').textContent = player.name;
+    document.getElementById('player-class').textContent = player.class;
+    document.getElementById('player-hp').textContent = `${player.hp}/${player.maxHp}`;
+    document.getElementById('hp-bar').style.width = `${player.hp_percent}%`;
+    document.getElementById('player-adenas').textContent = player.adenas;
+    document.getElementById('player-level').textContent = player.level;
+    document.getElementById('player-location').textContent = player.location;
+  }
+
+  // Пример боя: простой расчёт урона (подстроится под твои механики)
+  async function startFight() {
+    // Пример моба (можно брать из API или генерировать)
+    const mob = { hp: 40, attack: 8, expReward: 25, adenaReward: 15 };
+
+    // Простая симуляция боя (игрок бьёт первым)
+    let playerHp = player.hp;
+    let mobHp = mob.hp;
+
+    while (playerHp > 0 && mobHp > 0) {
+      // Игрок бьёт моба
+      const playerDmg = Math.max(1, player.attack - mob.defense / 2);
+      mobHp -= playerDmg;
+
+      if (mobHp <= 0) break;
+
+      // Моб бьёт игрока
+      const mobDmg = Math.max(1, mob.attack - player.defense / 2);
+      playerHp -= mobDmg;
+    }
+
+    const isDead = playerHp <= 0;
+    const finalHp = isDead ? 0 : playerHp;
+    const finalAdenas = player.adenas + (isDead ? 0 : mob.adenaReward);
+    const finalExp = player.exp + (isDead ? 0 : mob.expReward);
+
+    console.log('Результат боя:', { finalHp, finalAdenas, finalExp, isDead });
+
+    await saveFightResult(finalHp, finalAdenas, finalExp, isDead);
+  }
+
+  async function saveFightResult(finalHp, finalAdenas, finalExp, isDead) {
+    const res = await fetch('/fight-result', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        final_hp: finalHp,
+        final_adenas: finalAdenas,
+        final_exp: finalExp,
+        is_dead: isDead  // <-- это критично для респауна на сервере
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert('Ошибка сохранения боя: ' + (err.error || 'Неизвестная ошибка'));
+      return;
+    }
+
+    const result = await res.json();
+
+    // После сохранения обязательно обновляем данные игрока
+    await loadPlayer();
+
+    if (result.final_hp <= 0) {
+      alert('Вы погибли! Вы возрождены.');
+      // Тут можно показать экран смерти/респауна
+    } else {
+      alert('Бой завершён! Получено опыта и аден.');
+    }
+  }
+
+  // Кнопка боя (должна быть в HTML)
+  document.addEventListener('DOMContentLoaded', () => {
+    const btnFight = document.getElementById('btn-fight');
+    if (btnFight) {
+      btnFight.addEventListener('click', startFight);
+    }
+    loadPlayer();
+  });
+</script>
