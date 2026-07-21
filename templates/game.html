@@ -66,7 +66,7 @@
   <!-- СТАТУС ГЕРОЯ (всегда виден) -->
   <div class="section">
     <h3>Статус героя</h3>
-    <button onclick="loadStatus()" id="btn-status">Обновить статус</button>
+    <button id="btn-status" class="btn-refresh">Обновить статус</button>
     <div id="statusBox"></div>
   </div>
 
@@ -133,8 +133,10 @@
       <button id="chat-send" style="padding: 6px 12px; background: #333; color: #fff; border: none; cursor: pointer;">Отправить</button>
     </div>
   </div>
-
 <script>
+  document.getElementById('btn-status')?.addEventListener('click', () => {
+  loadStatus();
+});
   let currentPlayer = null;
   const chatMessagesBox = document.getElementById('chat-messages');
   const chatInput = document.getElementById('chat-input');
@@ -285,10 +287,6 @@ async function loadStatus() {
     // И только теперь сохраняем в localStorage
     savePlayerState();
   }
-
-  updateStatusBox();
-}
-
   updateStatusBox();
 }
 
