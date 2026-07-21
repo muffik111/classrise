@@ -428,7 +428,7 @@ def teleport():
         logger.error(f"Teleport error: {e}")
         return jsonify({"error": str(e)}), 500
     
-    @app.route('/player-death', methods=['POST'])
+@app.route('/player-death', methods=['POST'])
 def player_death():
     data = request.get_json() or {}
     char_id = data.get('char_id')
