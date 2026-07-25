@@ -93,10 +93,9 @@
     
     <div class="section">
       <h4>🗺 Телепортация в другой город</h4>
-      <select id="teleport-city">
-        <option value="capital">Столица (Capital)</option>
-        <option value="port">Порт (Port)</option>
-        <option value="desert">Пустыня (Desert)</option>
+      <!-- ВЫПАДАЮЩИЙ СПИСОК ТЕПЕРЬ ПУСТОЙ — ЗАПОЛНЯЕТСЯ JS -->
+      <select id="teleport-city" style="min-width: 200px;">
+        <option value="" disabled selected>Загрузка списка городов...</option>
       </select>
       <button onclick="handleTeleport()" style="background: #3498db; color: white;">Телепортироваться</button>
     </div>
@@ -105,7 +104,7 @@
   <!-- Вкладка: ОКРЕСТНОСТИ (БОЙ) -->
   <div id="tab-outskirts" class="tab-content">
     <h3>Окрестности города — Бой</h3>
-    <p>Сразитесь с обычным мобом (HP: 50). Механика: вы бьёте → моб бьёт в ответ.</p>
+    <p>Сразитесь с мобом из текущего города. Механика: вы бьёте → моб бьёт в ответ.</p>
     
     <button onclick="startFight()" id="btn-fight" disabled>Атаковать моба!</button>
     
@@ -248,7 +247,7 @@
     return null;
   }
 
-  // --- ЗАГРУЗКА СТАТУСА ИГРОКА ---
+  // --- ЗАГРУЗКА СТАТУСА ИГРОКА (С ОБНОВЛЕНИЕМ СПИСКА ГОРОДОВ) ---
   async function loadStatus() {
     isStatusLoading = true;
     const statusBox = document.getElementById('statusBox');
@@ -272,7 +271,7 @@
     } else {
       // ВАЖНО: используем ключи, которые реально возвращает server.py
       currentPlayer = {
-        char_id: data.id, // В server.py в SELECT * FROM characters есть id
+        char_id: data.id,
         name: data.name,
         class: data.class,
         level: data.level,
@@ -286,6 +285,33 @@
         location: data.location || 'city'
       };
 
+      // --- ОБНОВЛЕНИЕ СПИСКА ГОРОДОВ В ВЫПАДАЮЩЕМ МЕНЮ ---
+      const citySelect = document.getElementById('teleport-city');
+      if (citySelect && data.cities && Array.isArray(data.cities)) {
+        citySelect.innerHTML = ''; // Очищаем старые опции
+        
+        // Добавляем опцию "Выберите город"
+        const defaultOption = document.createElement('option');
+        defaultOption.value = '';
+        defaultOption.text = 'Выберите город для телепортации';
+        defaultOption.disabled = true;
+        defaultOption.selected = true;
+        citySelect.appendChild(defaultOption);
+
+        // Заполняем реальными городами из cities.py
+        data.cities.forEach(city => {
+          const option = document.createElement('option');
+          option.value = city;
+          option.text = city;
+          citySelect.appendChild(option);
+        });
+
+        // Устанавливаем текущую локацию как выбранную
+        if (data.location) {
+          citySelect.value = data.location;
+        }
+      }
+
       savePlayerState();
     }
 
@@ -297,8 +323,6 @@
   function updateFightButtonState() {
     const btn = document.getElementById('btn-fight');
     if (!btn) return;
-    // Кнопка активна, если есть игрок и он не в городе (или логика другая)
-    // Для MVP: активна всегда, если есть статус, но можно добавить проверку локации
     btn.disabled = isStatusLoading || !currentPlayer || typeof currentPlayer.char_id !== 'number';
     if (btn.disabled) {
       btn.textContent = 'Загрузка статуса...';
@@ -335,7 +359,13 @@
   async function handleTeleport() {
     const citySelect = document.getElementById('teleport-city');
     if (!citySelect) return;
-    const cityName = citySelect.options[citySelect.selectedIndex].text;
+    
+    const cityName = citySelect.value; // Используем value (точное название города), а не text
+    
+    if (!cityName) {
+      alert('Пожалуйста, выберите город из списка');
+      return;
+    }
 
     if (!currentPlayer) {
       addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
@@ -348,13 +378,13 @@
       const res = await fetch('/teleport', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ target_city: citySelect.value })
+        body: JSON.stringify({ target_city: cityName }) // Отправляем точное название
       });
 
       if (res.ok) {
         const data = await res.json();
         addChatMessage('СИСТЕМА', data.message || 'Телепортация успешна!', true);
-        loadStatus();
+        loadStatus(); // Перезагружаем статус, чтобы обновить список и кнопку
       } else {
         const err = await res.json().catch(() => ({}));
         addChatMessage('СИСТЕМА', err.error || 'Ошибка телепортации', true);
@@ -377,7 +407,6 @@
     logBox.innerHTML = '<span style="color:#aaa">Подготовка к сражению...</span>';
 
     try {
-      // ВАЖНО: Не передаем char_id в теле, сервер берет его из сессии
       const res = await fetch('/fight-action', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -390,22 +419,30 @@
           throw new Error(data.error || 'Ошибка боя');
       }
 
-      // --- ОБНОВЛЕНИЕ ИНТЕРФЕЙСА ---
+      // --- ОБНОВЛЕНИЕ ЛОГА (ИСПРАВЛЕННАЯ ВЕРСИЯ) ---
+      logBox.innerHTML = ''; // Очищаем лог
       
-      // 1. Обновляем лог (ИСПРАВЛЕНО: используем шаблонные строки правильно)
-      const logLines = data.log.split('\n').map(line => {
-          if (!line.trim()) return '';
-          return `<div class="log-line">\${line}</div>`;
-      }).join('');
-      logBox.innerHTML = logLines;
+      if (data.log && typeof data.log === 'string') {
+        const lines = data.log.split('\n');
+        lines.forEach(line => {
+          if (!line.trim()) return;
+          const p = document.createElement('div');
+          p.className = 'log-line';
+          
+          // Простая подсветка ключевых слов
+          let content = line;
+          if (content.includes('нанес')) p.classList.add('damage');
+          if (content.includes('восстановил')) p.classList.add('heal');
+          if (content.includes('ПОГИБ')) p.classList.add('death');
+          
+          p.textContent = content;
+          logBox.appendChild(p);
+        });
+      }
 
-      // 2. Обновляем статус игрока
-      // В ответе сервера player объект может отсутствовать, если бой не вернул полный профиль.
-      // Лучше обновить статус отдельным запросом или взять данные из ответа, если они там есть.
-      // Для надежности вызываем loadStatus(), чтобы синхронизироваться с БД.
-      loadStatus(); 
+      loadStatus(); // Синхронизируем статус
 
-      // 3. Визуальные эффекты
+      // Визуальные эффекты
       if (data.is_victory) {
           logBox.style.borderColor = '#4ade80';
           setTimeout(() => logBox.style.borderColor = '#333', 3000);
@@ -474,17 +511,13 @@
     chatInput.value = '';
 
     try {
-      // ВАЖНО: Не передаем char_id в теле, сервер берет его из сессии
       await fetch('/chat-send', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ text: text })
       });
-      // История обновится автоматически через polling
     } catch (e) {
       console.warn('Ошибка отправки сообщения в чат:', e);
-      // Возвращаем сообщение в UI, даже если сервер упал, чтобы пользователь не думал, что оно потерялось
-      // Но лучше показать ошибку.
     }
   }
 </script>
