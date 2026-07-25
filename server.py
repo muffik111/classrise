@@ -114,6 +114,23 @@ def migrate_database():
     conn.close()
 logger = logging.getLogger(__name__)
 
+# ==========================================
+# ДЕКОРАТОР АВТОРИЗАЦИИ
+# ==========================================
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Проверка: есть ли ID персонажа в сессии
+        if 'char_id' not in session:
+            # Если это API запрос
+            if request.path.startswith('/api') or request.headers.get('Accept') == 'application/json':
+                return jsonify({"error": "Требуется авторизация"}), 401
+            # Если обычный запрос страницы
+            return redirect(url_for('login_page'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 @app.route('/fight-action', methods=['POST'])
 @login_required
 def fight_action():
@@ -273,21 +290,6 @@ try:
 except ImportError as e:
     logger.warning(f"Warning: игровые модули не найдены (это нормально для MVP): {e}")
 
-# ==========================================
-# ДЕКОРАТОР АВТОРИЗАЦИИ
-# ==========================================
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # Проверка: есть ли ID персонажа в сессии
-        if 'char_id' not in session:
-            # Если это API запрос
-            if request.path.startswith('/api') or request.headers.get('Accept') == 'application/json':
-                return jsonify({"error": "Требуется авторизация"}), 401
-            # Если обычный запрос страницы
-            return redirect(url_for('login_page'))
-        return f(*args, **kwargs)
-    return decorated_function
 
 @app.errorhandler(500)
 def handle_500(e):
