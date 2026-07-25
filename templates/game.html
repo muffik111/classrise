@@ -30,7 +30,13 @@
     .btn-logout { float: right; background: #c0392b; margin-bottom: 10px; }
     .btn-logout:hover { background: #a93226; }
     
-    .log { background: #000; padding: 10px; border: 1px solid #333; min-height: 120px; font-family: monospace; white-space: pre-wrap; color: #0f0; overflow-y: auto; }
+    /* Лог боя: чёрный фон, моноширинный шрифт, автоскролл */
+    .log { background: #000; padding: 10px; border: 1px solid #333; min-height: 200px; font-family: monospace; white-space: pre-wrap; color: #0f0; overflow-y: auto; }
+    .log-line { margin: 4px 0; }
+    .log-line.system { color: #aaa; }
+    .log-line.damage { color: #fbbf24; }
+    .log-line.heal { color: #4ade80; }
+    .log-line.death { color: #ef4444; font-weight: bold; }
     
     #chat-panel {
       margin-top: 24px;
@@ -100,8 +106,10 @@
   <div id="tab-outskirts" class="tab-content">
     <h3>Окрестности города — Бой</h3>
     <p>Сразитесь с обычным мобом (HP: 50). Механика: вы бьёте → моб бьёт в ответ.</p>
+    
     <!-- Кнопка будет заблокирована, пока статус не загрузится -->
     <button onclick="startFight()" id="btn-fight" disabled>Атаковать моба!</button>
+    
     <div id="fightLog" class="log"></div>
   </div>
 
@@ -136,53 +144,43 @@
   </div>
 
 <script>
-  document.getElementById('btn-status')?.addEventListener('click', () => {
-    loadStatus();
-  });
-
+  // --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
   let currentPlayer = null;
-  let isStatusLoading = false; // Флаг: пока статус грузится — нельзя ничего делать
+  let isStatusLoading = false;
   const chatMessagesBox = document.getElementById('chat-messages');
   const chatInput = document.getElementById('chat-input');
   const chatSendBtn = document.getElementById('chat-send');
 
   document.addEventListener('DOMContentLoaded', () => {
-    console.log("Загрузка game.html...");
+    console.log("[FRONTEND] Загрузка game.html...");
     loadStatus(); 
     loadChatMessages();
   });
 
   // --- ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК ---
   function switchTab(tabName) {
-    // Убираем active у кнопок
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
 
-    // Если есть event.target (клик по кнопке) — активируем эту кнопку
     if (event && event.target && event.target.classList.contains('tab-btn')) {
       event.target.classList.add('active');
     } else {
-      // Иначе активируем первую кнопку
       const firstBtn = document.querySelector('.tab-btn');
       if (firstBtn) firstBtn.classList.add('active');
     }
 
-    // Скрываем все вкладки
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-    
-    // Показываем нужную
     const target = document.getElementById('tab-' + tabName);
     if (target) target.classList.add('active');
   }
 
+  // --- ЧАТ ---
   function addChatMessage(sender, text, isSystem = false) {
-    var time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    
-    var prefix = isSystem ? '[СИСТЕМА]' : '[' + sender + ']';
-    
-    var colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
-    var safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const prefix = isSystem ? '[СИСТЕМА]' : '[' + sender + ']';
+    const colorClass = isSystem ? 'chat-sender-sys' : 'chat-sender-player';
+    const safeText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-    var div = document.createElement('div');
+    const div = document.createElement('div');
     div.innerHTML = 
       '<span class="' + colorClass + '">' + prefix + '</span>' +
       '<span class="chat-text">' + safeText + '</span>' +
@@ -193,14 +191,14 @@
   }
 
   async function apiRequest(endpoint, method = 'GET', data = null) {
-    var options = { method: method };
+    const options = { method: method };
     if (data) {
       options.headers = {'Content-Type': 'application/json'};
       options.body = JSON.stringify(data);
     }
     
     try {
-      var res = await fetch(endpoint, options);
+      const res = await fetch(endpoint, options);
       
       if (res.status === 401) {
         addChatMessage('СИСТЕМА', 'Сессия истекла! Перенаправление на вход...', true);
@@ -209,7 +207,7 @@
       }
 
       if (!res.ok) {
-        var errData = await res.json().catch(() => ({}));
+        const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || 'Ошибка сервера: ' + res.status);
       }
       return await res.json();
@@ -249,13 +247,15 @@
     return null;
   }
 
+  // --- ЗАГРУЗКА СТАТУСА ИГРОКА ---
   async function loadStatus() {
     isStatusLoading = true;
-    var statusBox = document.getElementById('statusBox');
+    const statusBox = document.getElementById('statusBox');
     if (!statusBox) return;
-    statusBox.innerHTML = '<p>Загрузка статуса...</p>';
+    statusBox.innerHTML = '<p style="color:#aaa">Загрузка статуса...</p>';
     
-    var data = await apiRequest('/player-status');
+    console.log("[FRONTEND] Запрос /player-status...");
+    const data = await apiRequest('/player-status');
     
     if (!data) {
       const cached = loadPlayerState();
@@ -265,11 +265,11 @@
       } else {
         statusBox.innerHTML = '<p>Не удалось загрузить статус (нет сети и нет кэша)</p>';
         isStatusLoading = false;
-        updateFightButtonState(); // Разблокируем кнопку, чтобы можно было попробовать позже
+        updateFightButtonState();
         return;
       }
     } else {
-      // Сначала копируем данные с сервера
+      // ВАЖНО: используем те же ключи, что и в server.py
       currentPlayer = {
         char_id: data.id,
         name: data.name,
@@ -285,9 +285,9 @@
         location: data.location || 'city'
       };
 
-      // ВАЖНО: автовосстановление HP, если в городе и здоровье ≤ 0
+      // Автовосстановление HP, если в городе и здоровье ≤ 0
       if ((currentPlayer.location === 'city' || currentPlayer.location === undefined) && currentPlayer.current_hp <= 0) {
-        console.log('Автовосстановление HP в городе: было ' + currentPlayer.current_hp + ', стало ' + currentPlayer.max_hp);
+        console.log('[FRONTEND] Автовосстановление HP в городе: было ' + currentPlayer.current_hp + ', стало ' + currentPlayer.max_hp);
         currentPlayer.current_hp = currentPlayer.max_hp;
       }
 
@@ -302,7 +302,6 @@
   function updateFightButtonState() {
     const btn = document.getElementById('btn-fight');
     if (!btn) return;
-    // Кнопка активна только если статус загружен И есть char_id
     btn.disabled = isStatusLoading || !currentPlayer || typeof currentPlayer.char_id !== 'number';
     if (btn.disabled) {
       btn.textContent = 'Загрузка статуса...';
@@ -314,16 +313,16 @@
   function updateStatusBox() {
     if (!currentPlayer) return;
 
-    var statusBox = document.getElementById('statusBox');
+    const statusBox = document.getElementById('statusBox');
     if (!statusBox) return;
 
-    var hpPercent = currentPlayer.max_hp > 0 
+    const hpPercent = currentPlayer.max_hp > 0 
       ? Math.max(0, Math.min(100, (currentPlayer.current_hp / currentPlayer.max_hp) * 100)) 
       : 0;
     
-        var hpColor = currentPlayer.current_hp > 0 ? '#ff4444' : 'red';
+    const hpColor = currentPlayer.current_hp > 0 ? '#ff4444' : 'red';
 
-    var html = 
+    const html = 
       '<p>Имя: <b>' + currentPlayer.name + '</b> | Класс: <b>' + (currentPlayer.class || 'Unknown') + '</b> | Ур: <b>' + currentPlayer.level + '</b></p>' +
       '<p>EXP: ' + currentPlayer.exp + ' / ' + (currentPlayer.next_level_exp || currentPlayer.max_exp) + ' | Адены: ' + currentPlayer.adenas + '</p>' +
       '<div style="width:200px; background:#333; border:1px solid #555; margin: 5px 0;">' +
@@ -335,11 +334,11 @@
     statusBox.innerHTML = html;
   }
 
-  // --- ТЕЛЕПОРТАЦИЯ (ЗАГЛУШКА ПОД СЕРВЕР) ---
+  // --- ТЕЛЕПОРТАЦИЯ ---
   async function handleTeleport() {
-    var citySelect = document.getElementById('teleport-city');
+    const citySelect = document.getElementById('teleport-city');
     if (!citySelect) return;
-    var cityName = citySelect.options[citySelect.selectedIndex].text;
+    const cityName = citySelect.options[citySelect.selectedIndex].text;
 
     if (!currentPlayer) {
       addChatMessage('СИСТЕМА', 'Сначала войдите в игру!', true);
@@ -348,89 +347,96 @@
 
     addChatMessage('СИСТЕМА', 'Вы телепортируетесь в город: ' + cityName + '...', true);
 
-    setTimeout(() => {
-      addChatMessage('СИСТЕМА', 'Телепортация успешна! Вы теперь в городе: ' + cityName + '.', true);
-      loadStatus();
-    }, 1000);
-  }
-
-  // --- БОЙ В ОКРЕСТНОСТЯХ ---
-  async function startFight() {
-    const btn = document.getElementById('btn-fight');
-    const log = document.getElementById('fightLog');
-
-    // 1. Проверка: статус должен быть загружен, и у игрока должен быть char_id
-    if (isStatusLoading) {
-      addChatMessage('СИСТЕМА', 'Подождите: статус героя ещё загружается.', true);
-      return;
-    }
-    if (!currentPlayer || typeof currentPlayer.char_id !== 'number') {
-      addChatMessage('СИСТЕМА', 'Сначала войдите в игру и дождитесь загрузки статуса.', true);
-      return;
-    }
-
-    // Блокируем кнопку, чтобы нельзя было спамить кликами
-    btn.disabled = true;
-    btn.textContent = 'Расчёт боя...';
-    log.innerHTML = '';
-    addLog('Вы атакуете моба...');
-
     try {
-      const res = await fetch('/fight-action', {
+      const res = await fetch('/teleport', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ char_id: currentPlayer.char_id })
+        body: JSON.stringify({ target_city: citySelect.value })
       });
 
       if (res.ok) {
         const data = await res.json();
-
-        // Обновляем состояние игрока данными с сервера
-        currentPlayer = data.player;
-        savePlayerState(); // localStorage — только кэш, не источник истины
-        updateStatusBox();
-
-        // Выводим лог боя, который посчитал сервер
-        data.log.split('\n').forEach(line => {
-          if (line.trim()) addLog(line);
-        });
-
-        if (data.is_dead) {
-          btn.disabled = true;
-          btn.textContent = 'Вы погибли. Телепортация в город...';
-          setTimeout(() => switchTab('city'), 2000);
-        } else if (data.is_victory) {
-          btn.disabled = true;
-          btn.textContent = 'Моб повержен!';
-          // Сброс кнопки через 3 секунды
-          setTimeout(() => {
-            btn.disabled = false;
-            btn.textContent = 'Атаковать моба!';
-            log.innerHTML = '';
-          }, 3000);
-        }
+        addChatMessage('СИСТЕМА', data.message || 'Телепортация успешна!', true);
+        loadStatus();
       } else {
         const err = await res.json().catch(() => ({}));
-        addChatMessage('СИСТЕМА', err.error || 'Ошибка сервера: ' + res.status, true);
-        btn.disabled = false;
-        btn.textContent = 'Атаковать моба!';
+        addChatMessage('СИСТЕМА', err.error || 'Ошибка телепортации', true);
       }
     } catch (e) {
       console.error(e);
       addChatMessage('СИСТЕМА', 'Нет связи с сервером', true);
-      btn.disabled = false;
-      btn.textContent = 'Атаковать моба!';
     }
   }
 
-  function addLog(text) {
+  // --- БОЙ В ОКРЕСТНОСТЯХ ---
+async function startFight() {
+    const btn = document.getElementById('btn-fight');
+    const logBox = document.getElementById('fightLog');
+    
+    if (!btn || !logBox) return;
+
+    // Блокируем кнопку
+    btn.disabled = true;
+    btn.textContent = 'Бой идет...';
+    logBox.innerHTML = '<span style="color:#aaa">Подготовка к сражению...</span>';
+
+    const charId = currentPlayer ? currentPlayer.char_id : null;
+
+    try {
+        // ВАЖНО: Эндпоинт должен совпадать с server.py -> /fight-action
+        const res = await fetch('/fight-action', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ char_id: charId }) // Отправляем ID явно
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || !data.success) {
+            throw new Error(data.error || 'Ошибка боя');
+        }
+
+        // --- ОБНОВЛЕНИЕ ИНТЕРФЕЙСА ---
+        
+        // 1. Обновляем лог
+        const logLines = data.log.split('\n').map(line => `<div class="log-line">\${line}</div>`).join('');
+        logBox.innerHTML = logLines;
+
+        // 2. Обновляем статус игрока (HP, деньги и т.д.)
+        currentPlayer = data.player;
+        updateStatusBox(); // Эта функция уже есть в твоем коде
+        updateFightButtonState(); // Разблокирует кнопку или скроет её, если игрок в городе
+
+        // 3. Визуальные эффекты
+        if (data.is_victory) {
+            logBox.style.borderColor = '#4ade80'; // Зеленая рамка за победу
+            setTimeout(() => logBox.style.borderColor = '#333', 3000);
+        } else if (data.is_dead) {
+            logBox.style.borderColor = '#ef4444'; // Красная рамка за смерть
+            setTimeout(() => logBox.style.borderColor = '#333', 3000);
+        }
+
+    } catch (error) {
+        console.error('Ошибка боя:', error);
+        logBox.innerHTML = `<div class="log-line system" style="color:red">Ошибка соединения: \${error.message}</div>`;
+        addChatMessage('СИСТЕМА', 'Не удалось провести бой. Проверьте консоль.', true);
+    } finally {
+        // Разблокируем кнопку (или оставим заблокированной, если игрок умер и телепортирован)
+        updateFightButtonState();
+    }
+}
+
+  function addLog(text, type = 'system') {
     if (!document.getElementById('fightLog')) return;
-    document.getElementById('fightLog').innerHTML += '<p>' + text + '</p>';
+    const p = document.createElement('p');
+    p.className = 'log-line ' + type;
+    p.textContent = text;
+    document.getElementById('fightLog').appendChild(p);
     const fightLog = document.getElementById('fightLog');
     fightLog.scrollTop = fightLog.scrollHeight;
   }
 
-  // --- ЧАТ ---
+  // --- ЧАТ (ОТПРАВКА) ---
   function loadChatMessages() {
     addChatMessage('СИСТЕМА', 'Чат подключён. Добро пожаловать в ClassRise!', true);
   }
@@ -447,10 +453,10 @@
   }
 
   async function sendChatMessage() {
-    var text = chatInput.value.trim();
+    const text = chatInput.value.trim();
     if (!text || !currentPlayer) return;
 
-    var sender = currentPlayer.name || 'Игрок';
+    const sender = currentPlayer.name || 'Игрок';
     addChatMessage(sender, text, false);
     chatInput.value = '';
 
@@ -460,7 +466,7 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           char_id: currentPlayer.char_id,
-          message: text
+          text: text
         })
       });
     } catch (e) {
@@ -470,4 +476,3 @@
 </script>
 </body>
 </html>
-

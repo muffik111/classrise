@@ -276,66 +276,67 @@ def logout():
 # БОЕВАЯ МЕХАНИКА
 # ==========================================
 @app.route('/fight-action', methods=['POST'])
-@login_required  # Теперь сработает корректно, потому что login_required объявлен выше
+@login_required
 def fight_action():
     init_db_if_needed()
 
-    data = request.get_json(silent=True)
-    if not data:
-        logger.warning("[FIGHT] Получен запрос без JSON")
-        return jsonify({"error": "Требуется JSON в теле запроса"}), 400
-
-    char_id = data.get('char_id')
-    if char_id is None:
-        logger.warning(f"[FIGHT] Нет char_id в запросе: {data}")
-        return jsonify({'error': 'Нет ID персонажа'}), 400
-
-    if not isinstance(char_id, int):
-        logger.warning(f"[FIGHT] char_id не число: {char_id}")
-        return jsonify({'error': 'char_id должен быть целым числом'}), 400
-
-    if session.get('char_id') != char_id:
-        logger.warning(f"[FIGHT] Попытка атаки с чужим ID. Session: {session.get('char_id')}, Request: {char_id}")
-        return jsonify({'error': 'Несовпадение ID персонажа в сессии'}), 403
+    data = request.get_json(silent=True) or {}
+    
+    # 1. Получаем char_id из сессии (надежнее, чем из JSON, чтобы избежать подмены)
+    char_id = session.get('char_id')
+    
+    if not char_id:
+        return jsonify({"error": "Нет активной сессии персонажа"}), 401
 
     conn = get_db()
     if conn is None:
-        logger.error("[FIGHT] Не удалось получить соединение с БД")
         return jsonify({'error': 'Ошибка сервера: нет соединения с БД'}), 500
 
     cursor = conn.cursor()
 
     try:
+        # 2. Получаем данные игрока
         cursor.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
         char = cursor.fetchone()
+        
         if not char:
-            logger.warning(f"[FIGHT] Персонаж не найден: char_id={char_id}")
             return jsonify({'error': 'Персонаж не найден'}), 404
 
-        current_hp = char['current_hp']
-        max_hp = char['max_hp']
-        attack = char['attack']
-        defense = char['defense']
-        adenas = char['adenas']
-        exp = char['exp']
-        location = char['location']
+        # Распаковываем данные с безопасными значениями по умолчанию
+        current_hp = max(0, char['current_hp'])
+        max_hp = max(1, char['max_hp'])
+        attack = max(1, char['attack'])
+        defense = max(0, char['defense'])
+        adenas = max(0, char['adenas'])
+        exp = max(0, char['exp'])
+        location = char['location'] or 'city'
         char_name = char['name']
         char_class = char['class']
         level = char.get('level', 1)
         next_level_exp = char.get('next_level_exp', 100)
 
+        # Проверка локации (опционально, но полезно)
+        if location != 'outskirts': 
+            # Если хочешь разрешить бой только в окрестностях, раскомментируй:
+            # return jsonify({'error': 'Вы не в зоне боя! Телепортируйтесь в окрестности.', 'is_victory': False}), 403
+            pass 
+
         log_messages = []
         is_victory = False
         is_dead = False
 
+        # Параметры моба
         mob_hp = 50
         mob_attack = 12
         mob_defense = 2
 
+        # --- ХОД ИГРОКА ---
+        # Формула урона: (Атака * случайный множитель) - Защита моба
         player_dmg = max(1, int(attack * (0.8 + random.random() * 0.4)) - mob_defense)
         mob_hp -= player_dmg
-        log_messages.append(f"Вы нанесли мобу {player_dmg} урона. У моба осталось {mob_hp} HP.")
+        log_messages.append(f"⚔️ Вы нанесли мобу {player_dmg} урона. У моба осталось {mob_hp} HP.")
 
+        # --- ПРОВЕРКА ПОБЕДЫ ---
         if mob_hp <= 0:
             is_victory = True
             reward_adenas = 15
@@ -344,10 +345,12 @@ def fight_action():
             exp += reward_exp
             log_messages.append(f"🎉 Победа! Моб повержен. Получено: {reward_adenas} аден, {reward_exp} EXP.")
         else:
+            # --- ХОД МОБА ---
             mob_dmg = max(1, int(mob_attack * (0.8 + random.random() * 0.4)) - defense)
             current_hp -= mob_dmg
-            log_messages.append(f"Моб нанёс вам {mob_dmg} урона. У вас осталось {current_hp} HP.")
+            log_messages.append(f"👹 Моб нанёс вам {mob_dmg} урона. У вас осталось {current_hp} HP.")
 
+            # --- ПРОВЕРКА СМЕРТИ ---
             if current_hp <= 0:
                 is_dead = True
                 penalty = int(adenas * 0.05)
@@ -357,16 +360,56 @@ def fight_action():
                 else:
                     log_messages.append("💀 Вы погибли!")
 
+                # Воскрешение и телепорт в город
                 current_hp = max_hp
                 location = 'city'
-                log_messages.append("Вы были телепортированы в город и воскресли.")
+                log_messages.append("🏙 Вы были телепортированы в город и воскресли.")
 
+        # --- СОХРАНЕНИЕ В БД ---
         cursor.execute('''
             UPDATE characters
             SET current_hp = ?, adenas = ?, exp = ?, location = ?
             WHERE id = ?
         ''', (current_hp, adenas, exp, location, char_id))
         conn.commit()
+
+        # --- ФОРМИРОВАНИЕ ОТВЕТА (ГАРАНТИРОВАННАЯ СТРУКТУРА) ---
+        response_data = {
+            'success': True,
+            'log': '\n'.join(log_messages),
+            'is_victory': is_victory,
+            'is_dead': is_dead,
+            'player': {
+                'id': char_id,
+                'name': char_name,
+                'class': char_class,
+                'level': level,
+                'adenas': adenas,
+                'exp': exp,
+                'next_level_exp': next_level_exp,
+                'current_hp': current_hp,
+                'max_hp': max_hp,
+                'attack': attack,
+                'defense': defense,
+                'hp_percent': int((current_hp / max_hp) * 100),
+                'location': location
+            }
+        }
+
+        return jsonify(response_data), 200
+
+    except sqlite3.Error as e:
+        conn.rollback()
+        logger.error(f"[FIGHT] Критическая ошибка БД: {e}")
+        # Возвращаем безопасный ответ даже при ошибке, чтобы JS не упал
+        return jsonify({
+            'success': False,
+            'error': 'Ошибка базы данных',
+            'log': 'Произошла ошибка сервера. Попробуйте позже.'
+        }), 500
+    finally:
+        if conn:
+            conn.close()
 
         # ... (код до response_data)
 
