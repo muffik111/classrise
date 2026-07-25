@@ -30,7 +30,7 @@
     .btn-logout { float: right; background: #c0392b; margin-bottom: 10px; }
     .btn-logout:hover { background: #a93226; }
     
-    /* Лог боя: чёрный фон, моноширинный шрифт, автоскролл */
+    /* Лог боя */
     .log { background: #000; padding: 10px; border: 1px solid #333; min-height: 200px; font-family: monospace; white-space: pre-wrap; color: #0f0; overflow-y: auto; }
     .log-line { margin: 4px 0; }
     .log-line.system { color: #aaa; }
@@ -72,7 +72,7 @@
   <!-- СТАТУС ГЕРОЯ (всегда виден) -->
   <div class="section">
     <h3>Статус героя</h3>
-    <button id="btn-status" class="btn-refresh">Обновить статус</button>
+    <button id="btn-status" class="btn-refresh" onclick="loadStatus()">Обновить статус</button>
     <div id="statusBox"></div>
   </div>
 
@@ -107,7 +107,6 @@
     <h3>Окрестности города — Бой</h3>
     <p>Сразитесь с обычным мобом (HP: 50). Механика: вы бьёте → моб бьёт в ответ.</p>
     
-    <!-- Кнопка будет заблокирована, пока статус не загрузится -->
     <button onclick="startFight()" id="btn-fight" disabled>Атаковать моба!</button>
     
     <div id="fightLog" class="log"></div>
@@ -147,6 +146,7 @@
   // --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
   let currentPlayer = null;
   let isStatusLoading = false;
+  let chatIntervalId = null;
   const chatMessagesBox = document.getElementById('chat-messages');
   const chatInput = document.getElementById('chat-input');
   const chatSendBtn = document.getElementById('chat-send');
@@ -154,7 +154,8 @@
   document.addEventListener('DOMContentLoaded', () => {
     console.log("[FRONTEND] Загрузка game.html...");
     loadStatus(); 
-    loadChatMessages();
+    loadChatHistory();
+    startChatPolling();
   });
 
   // --- ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК ---
@@ -269,9 +270,9 @@
         return;
       }
     } else {
-      // ВАЖНО: используем те же ключи, что и в server.py
+      // ВАЖНО: используем ключи, которые реально возвращает server.py
       currentPlayer = {
-        char_id: data.id,
+        char_id: data.id, // В server.py в SELECT * FROM characters есть id
         name: data.name,
         class: data.class,
         level: data.level,
@@ -285,12 +286,6 @@
         location: data.location || 'city'
       };
 
-      // Автовосстановление HP, если в городе и здоровье ≤ 0
-      if ((currentPlayer.location === 'city' || currentPlayer.location === undefined) && currentPlayer.current_hp <= 0) {
-        console.log('[FRONTEND] Автовосстановление HP в городе: было ' + currentPlayer.current_hp + ', стало ' + currentPlayer.max_hp);
-        currentPlayer.current_hp = currentPlayer.max_hp;
-      }
-
       savePlayerState();
     }
 
@@ -302,6 +297,8 @@
   function updateFightButtonState() {
     const btn = document.getElementById('btn-fight');
     if (!btn) return;
+    // Кнопка активна, если есть игрок и он не в городе (или логика другая)
+    // Для MVP: активна всегда, если есть статус, но можно добавить проверку локации
     btn.disabled = isStatusLoading || !currentPlayer || typeof currentPlayer.char_id !== 'number';
     if (btn.disabled) {
       btn.textContent = 'Загрузка статуса...';
@@ -320,11 +317,11 @@
       ? Math.max(0, Math.min(100, (currentPlayer.current_hp / currentPlayer.max_hp) * 100)) 
       : 0;
     
-    const hpColor = currentPlayer.current_hp > 0 ? '#ff4444' : 'red';
+    const hpColor = currentPlayer.current_hp > 30 ? '#4ade80' : (currentPlayer.current_hp > 10 ? '#f97316' : '#ef4444');
 
     const html = 
       '<p>Имя: <b>' + currentPlayer.name + '</b> | Класс: <b>' + (currentPlayer.class || 'Unknown') + '</b> | Ур: <b>' + currentPlayer.level + '</b></p>' +
-      '<p>EXP: ' + currentPlayer.exp + ' / ' + (currentPlayer.next_level_exp || currentPlayer.max_exp) + ' | Адены: ' + currentPlayer.adenas + '</p>' +
+      '<p>EXP: ' + currentPlayer.exp + ' / ' + currentPlayer.next_level_exp + ' | Адены: ' + currentPlayer.adenas + '</p>' +
       '<div style="width:200px; background:#333; border:1px solid #555; margin: 5px 0;">' +
          '<div style="width:' + hpPercent + '% ; height:20px; background:' + hpColor + ';"></div>' +
       '</div>' +
@@ -369,62 +366,62 @@
   }
 
   // --- БОЙ В ОКРЕСТНОСТЯХ ---
-async function startFight() {
+  async function startFight() {
     const btn = document.getElementById('btn-fight');
     const logBox = document.getElementById('fightLog');
     
     if (!btn || !logBox) return;
 
-    // Блокируем кнопку
     btn.disabled = true;
     btn.textContent = 'Бой идет...';
     logBox.innerHTML = '<span style="color:#aaa">Подготовка к сражению...</span>';
 
-    const charId = currentPlayer ? currentPlayer.char_id : null;
-
     try {
-        // ВАЖНО: Эндпоинт должен совпадать с server.py -> /fight-action
-        const res = await fetch('/fight-action', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ char_id: charId }) // Отправляем ID явно
-        });
+      // ВАЖНО: Не передаем char_id в теле, сервер берет его из сессии
+      const res = await fetch('/fight-action', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({}) 
+      });
 
-        const data = await res.json();
+      const data = await res.json();
 
-        if (!res.ok || !data.success) {
-            throw new Error(data.error || 'Ошибка боя');
-        }
+      if (!res.ok || !data.success) {
+          throw new Error(data.error || 'Ошибка боя');
+      }
 
-        // --- ОБНОВЛЕНИЕ ИНТЕРФЕЙСА ---
-        
-        // 1. Обновляем лог
-        const logLines = data.log.split('\n').map(line => `<div class="log-line">\${line}</div>`).join('');
-        logBox.innerHTML = logLines;
+      // --- ОБНОВЛЕНИЕ ИНТЕРФЕЙСА ---
+      
+      // 1. Обновляем лог (ИСПРАВЛЕНО: используем шаблонные строки правильно)
+      const logLines = data.log.split('\n').map(line => {
+          if (!line.trim()) return '';
+          return `<div class="log-line">\${line}</div>`;
+      }).join('');
+      logBox.innerHTML = logLines;
 
-        // 2. Обновляем статус игрока (HP, деньги и т.д.)
-        currentPlayer = data.player;
-        updateStatusBox(); // Эта функция уже есть в твоем коде
-        updateFightButtonState(); // Разблокирует кнопку или скроет её, если игрок в городе
+      // 2. Обновляем статус игрока
+      // В ответе сервера player объект может отсутствовать, если бой не вернул полный профиль.
+      // Лучше обновить статус отдельным запросом или взять данные из ответа, если они там есть.
+      // Для надежности вызываем loadStatus(), чтобы синхронизироваться с БД.
+      loadStatus(); 
 
-        // 3. Визуальные эффекты
-        if (data.is_victory) {
-            logBox.style.borderColor = '#4ade80'; // Зеленая рамка за победу
-            setTimeout(() => logBox.style.borderColor = '#333', 3000);
-        } else if (data.is_dead) {
-            logBox.style.borderColor = '#ef4444'; // Красная рамка за смерть
-            setTimeout(() => logBox.style.borderColor = '#333', 3000);
-        }
+      // 3. Визуальные эффекты
+      if (data.is_victory) {
+          logBox.style.borderColor = '#4ade80';
+          setTimeout(() => logBox.style.borderColor = '#333', 3000);
+      } else if (data.is_dead) {
+          logBox.style.borderColor = '#ef4444';
+          setTimeout(() => logBox.style.borderColor = '#333', 3000);
+      }
 
     } catch (error) {
-        console.error('Ошибка боя:', error);
-        logBox.innerHTML = `<div class="log-line system" style="color:red">Ошибка соединения: \${error.message}</div>`;
-        addChatMessage('СИСТЕМА', 'Не удалось провести бой. Проверьте консоль.', true);
+      console.error('Ошибка боя:', error);
+      logBox.innerHTML = `<div class="log-line system" style="color:red">Ошибка соединения: \${error.message}</div>`;
+      addChatMessage('СИСТЕМА', 'Не удалось провести бой. Проверьте консоль.', true);
     } finally {
-        // Разблокируем кнопку (или оставим заблокированной, если игрок умер и телепортирован)
-        updateFightButtonState();
+      updateFightButtonState();
     }
-}
+  }
 
   function addLog(text, type = 'system') {
     if (!document.getElementById('fightLog')) return;
@@ -436,9 +433,25 @@ async function startFight() {
     fightLog.scrollTop = fightLog.scrollHeight;
   }
 
-  // --- ЧАТ (ОТПРАВКА) ---
-  function loadChatMessages() {
-    addChatMessage('СИСТЕМА', 'Чат подключён. Добро пожаловать в ClassRise!', true);
+  // --- ЧАТ (ОТПРАВКА И ЗАГРУЗКА) ---
+  
+  async function loadChatHistory() {
+    try {
+      const data = await apiRequest('/chat-history?limit=20');
+      if (data && Array.isArray(data)) {
+        chatMessagesBox.innerHTML = '';
+        data.forEach(msg => {
+          addChatMessage(msg.player_name, msg.text, false);
+        });
+      }
+    } catch (e) {
+      console.error('Ошибка загрузки истории чата', e);
+    }
+  }
+
+  function startChatPolling() {
+    if (chatIntervalId) clearInterval(chatIntervalId);
+    chatIntervalId = setInterval(loadChatHistory, 5000);
   }
 
   if (chatInput && chatSendBtn) {
@@ -461,16 +474,17 @@ async function startFight() {
     chatInput.value = '';
 
     try {
+      // ВАЖНО: Не передаем char_id в теле, сервер берет его из сессии
       await fetch('/chat-send', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          char_id: currentPlayer.char_id,
-          text: text
-        })
+        body: JSON.stringify({ text: text })
       });
+      // История обновится автоматически через polling
     } catch (e) {
       console.warn('Ошибка отправки сообщения в чат:', e);
+      // Возвращаем сообщение в UI, даже если сервер упал, чтобы пользователь не думал, что оно потерялось
+      // Но лучше показать ошибку.
     }
   }
 </script>
