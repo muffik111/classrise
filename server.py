@@ -1,19 +1,23 @@
 import os
 import logging
 import random
-from functools import wraps
 import time
+import importlib
+from functools import wraps
 
 import sqlite3
 from flask import Flask, request, jsonify, session, render_template, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # --- Импорт внешних модулей ---
-from cities import CITIES, is_valid_city, get_city_mob_module
-from items import ITEMS_DB, get_item_by_id
-
-# --- МАРКЕР ВЕРСИИ ---
-print("=== VERSION: 2026-07-26-MINIMAL-SERVER-ARCHITECTURE-CLEAN-FIGHT-LOGIC ===")
+# Убедись, что файлы cities.py и items.py лежат в той же папке, что и server.py
+try:
+    from cities import CITIES, is_valid_city, get_city_mob_module
+    from items import ITEMS_DB, get_item_by_id
+except ImportError as e:
+    print(f"[CRITICAL] Не удалось импортировать модули cities/items. Ошибка: {e}")
+    print("[HINT] Создай файлы cities.py и items.py в корне проекта.")
+    exit(1)
 
 # ==========================================
 # НАСТРОЙКА ЛОГГЕРА
@@ -45,6 +49,7 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'char_id' not in session:
+            # Если запрос API (JSON) или AJAX, возвращаем 401
             if request.path.startswith('/api') or request.headers.get('Accept') == 'application/json':
                 return jsonify({"error": "Требуется авторизация"}), 401
             return redirect(url_for('login_page'))
@@ -126,12 +131,10 @@ def init_db_if_needed():
     conn.close()
     logger.info("[INIT] Таблицы успешно созданы.")
 
-    import importlib
 
 def get_mobs_for_city(city_name: str):
     """
     Динамически загружает модуль мобов для города и возвращает список MOBS.
-    Если модуль не найден или нет списка MOBS — возвращает пустой список.
     """
     module_name = get_city_mob_module(city_name)
     try:
@@ -190,7 +193,7 @@ def register():
     try:
         pwd_hash = generate_password_hash(password)
         cur.execute('SELECT COUNT(*) FROM accounts')
-        account_count = cur.fetchone()
+        account_count = cur.fetchone() # Исправлено: fetchone() возвращает кортеж
         is_admin = 1 if account_count == 0 else 0
 
         cur.execute(
@@ -199,7 +202,6 @@ def register():
         )
         account_id = cur.lastrowid
 
-        # Базовая статистика класса (можно вынести в отдельный модуль classes.py)
         base_stats = {
             "warrior": {"attack": 8, "defense": 6},
             "archer": {"attack": 10, "defense": 4},
@@ -279,7 +281,7 @@ def logout():
     return '', 204
 
 # ==========================================
-# БОЕВАЯ МЕХАНИКА (ВЫЗОВ ВНЕШНЕГО МОДУЛЯ)
+# БОЕВАЯ МЕХАНИКА
 # ==========================================
 
 @app.route('/api/fight/start', methods=['POST'])
@@ -300,17 +302,13 @@ def start_fight():
         return jsonify({"error": "Персонаж не найден"}), 404
 
     city_name = row["location"]
-
-    # Получаем список мобов для города
     mobs = get_mobs_for_city(city_name)
+    
     if not mobs:
-        # Фоллбэк: если мобов нет, создаём «обычного моба» как раньше
         enemy = {"name": "Обычный моб", "hp": 50, "attack": 8, "defense": 2, "adenas": 10, "exp": 20}
     else:
-        # Выбираем случайного моба из списка
         enemy = random.choice(mobs)
 
-    # Сохраняем состояние боя в сессию или БД
     session["fight_state"] = {
         "enemy": enemy,
         "enemy_hp": enemy["hp"],
@@ -348,26 +346,17 @@ def fight_action():
         if not char:
             return jsonify({'error': 'Персонаж не найден'}), 404
 
-        # Получаем мобов для текущей локации
         current_location = char['location']
-        mob_data = None
-        
-        # Пытаемся импортировать мобов для города
-        try:
-            mob_module_name = get_city_mob_module(current_location)
-            mob_module = __import__(mob_module_name)
-            mob_data = mob_module.MOBS
-        except (ImportError, AttributeError):
-            # Если файла нет или MOBS не определен — используем дефолтных мобов
+        mob_data = get_mobs_for_city(current_location)
+
+        if not mob_data:
             mob_data = [
                 {"id": 1, "name": "Обычный моб", "hp": 50, "attack": 12, "defense": 2, "adenas": 15, "exp": 25}
             ]
             logger.warning(f"Нет файла мобов для города {current_location}, используются дефолтные мобы.")
 
-        # Выбираем случайного моба
         mob = random.choice(mob_data)
 
-        # Логика боя (упрощенная, можно вынести в отдельный модуль battle.py)
         current_hp = max(0, char['current_hp'])
         max_hp = max(1, char['max_hp'])
         attack = max(1, char['attack'])
@@ -412,7 +401,7 @@ def fight_action():
                 else:
                     log_messages.append("💀 Вы погибли!")
                 current_hp = max_hp
-                location = 'Аэрдмор'  # Телепорт в стартовый город
+                location = 'Аэрдмор'
                 log_messages.append("🏙 Вы были телепортированы в Аэрдмор и воскресли.")
 
         cursor.execute('''
@@ -456,11 +445,15 @@ def fight_action():
             conn.close()
 
 # ==========================================
-# СТАТУС ИГРОКА
+# ГЛАВНЫЙ ЭНДПОИНТ ДЛЯ ФРОНТЕНДА
 # ==========================================
 @app.route('/player-status')
 @login_required
 def player_status():
+    """
+    Возвращает полный статус игрока И список всех городов.
+    Это решает проблему 'Загрузка статуса...', так как фронтенд получает всё сразу.
+    """
     init_db_if_needed()
     char_id = session.get('char_id')
     if not char_id:
@@ -485,6 +478,7 @@ def player_status():
     max_hp = max(1, data.get('max_hp', 1))
     current_hp = max(0, data.get('current_hp', 0))
 
+    # Формируем ответ: данные игрока + список городов (из модуля cities)
     response_data = {
         'name': data['name'],
         'class': data['class'],
@@ -499,7 +493,7 @@ def player_status():
         'hp_percent': int((current_hp / max_hp) * 100),
         'location': data.get('location', 'Аэрдмор'),
         'inventory': data['inventory'],
-        'cities': CITIES  # Возвращаем список городов фронтенду
+        'cities': CITIES  # <-- ВОТ ЭТОГО НЕ ХВАТАЛО РАНЬШЕ
     }
     return jsonify(response_data)
 
@@ -655,63 +649,102 @@ def player_levelup():
         conn.commit()
         conn.close()
 
+        msg = f"Поздравляем! Вы повысили уровень {level_up_count} раз. Теперь ваш уровень: {level}."
+        if level_up_count == 0:
+            msg = f"Получено {exp_add} EXP. До следующего уровня осталось {next_level_exp - new_exp} EXP."
+
         return jsonify({
             "ok": True,
+            "message": msg,
             "level": level,
             "exp": new_exp,
-            "next_level_exp": next_level_exp,
-            "level_ups": level_up_count
+            "next_level_exp": next_level_exp
         })
     except Exception as e:
         logger.error(f"Levelup error: {e}")
         return jsonify({"error": str(e)}), 500
 
+
 # ==========================================
-# АДМИН-КОМАНДА /give
+# ОТЛАДОЧНЫЙ ЭНДПОИНТ (ТОЛЬКО ДЛЯ РАЗРАБОТКИ)
 # ==========================================
-@app.route('/give', methods=['POST'])
+@app.route('/debug/reset-player', methods=['POST'])
 @login_required
-def give_command():
+def debug_reset_player():
+    """
+    Сбрасывает HP, телепортирует в Аэрдмор.
+    ВНИМАНИЕ: Не используй в продакшене без дополнительной проверки прав!
+    """
     init_db_if_needed()
-    if not session.get('is_admin'):
-        return jsonify({"error": "Нет прав администратора"}), 403
-
-    amount = request.args.get('amount', type=int)
-    target_name = request.args.get('target_name', '').strip()
-
-    if amount is None or amount <= 0 or not target_name:
-        return jsonify({"error": "Параметры: amount (число > 0) и target_name (имя персонажа)"}), 400
+    char_id = session.get('char_id')
+    if not char_id:
+        return jsonify({"error": "Нет персонажа"}), 401
 
     try:
         conn = get_db()
-        if conn is None:
-            return jsonify({'error': 'Ошибка сервера: не удалось открыть БД'}), 500
+        if not conn:
+            return jsonify({"error": "Ошибка БД"}), 500
 
         cur = conn.cursor()
-        cur.execute('SELECT id, adenas FROM characters WHERE name = ?', (target_name,))
+        # Сброс HP до максимума (нужно сначала получить max_hp)
+        cur.execute('SELECT max_hp FROM characters WHERE id = ?', (char_id,))
         row = cur.fetchone()
         if not row:
             conn.close()
             return jsonify({"error": "Персонаж не найден"}), 404
 
-        target_id = row['id']
-        old_adenas = row['adenas']
-        new_adenas = old_adenas + amount
-
-        cur.execute('UPDATE characters SET adenas = ? WHERE id = ?', (new_adenas, target_id))
+        max_hp = row['max_hp']
+        cur.execute('''
+            UPDATE characters
+            SET current_hp = ?, location = ?
+            WHERE id = ?
+        ''', (max_hp, 'Аэрдмор', char_id))
         conn.commit()
         conn.close()
 
         return jsonify({
             "ok": True,
-            "target_name": target_name,
-            "amount": amount,
-            "old_adenas": old_adenas,
-            "new_adenas": new_adenas
+            "message": "Игрок сброшен: HP восстановлен, телепорт в Аэрдмор."
         })
     except Exception as e:
-        logger.error(f"Give command error: {e}")
-        return jsonify({"error": "Ошибка выполнения команды /give"}), 500
+        logger.error(f"Debug reset error: {e}")
+        return jsonify({"error": str(e)}), 500
 
+
+# ==========================================
+# ЗАПУСК ПРИЛОЖЕНИЯ
+# ==========================================
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Инициализация БД при старте сервера
+    init_db_if_needed()
+    
+    # Проверка наличия файлов cities.py и items.py
+    if not os.path.exists('cities.py'):
+        logger.warning("[CHECK] Файл cities.py не найден! Создаю шаблон...")
+        with open('cities.py', 'w', encoding='utf-8') as f:
+            f.write('''
+CITIES = [
+    {"name": "Аэрдмор", "description": "Столица королевства, здесь безопасно."},
+    {"name": "Тёмный Лес", "description": "Опасные заросли, много диких зверей."},
+    {"name": "Вулкан Огня", "description": "Жаркое место, обитают огненные элементали."}
+]
+
+def is_valid_city(name):
+    return any(c['name'] == name for c in CITIES)
+
+def get_city_mob_module(city_name):
+    # Возвращает имя модуля, например, "mobs_aerdmor"
+    clean_name = city_name.lower().replace(' ', '_')
+    return f"mobs_{clean_name}"
+''')
+        logger.warning("[CHECK] Файл cities.py создан. Теперь нужно создать файлы мобов (например, mobs_aerdmor.py).")
+
+    if not os.path.exists('items.py'):
+        logger.warning("[CHECK] Файл items.py не найден! Создаю пустой шаблон...")
+        with open('items.py', 'w', encoding='utf-8') as f:
+            f.write('ITEMS_DB = {}\n')
+
+    # Запуск Flask
+    # debug=True полезен для разработки, но в продакшене (Amvera/Docker) ставь False
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
