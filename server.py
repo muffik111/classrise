@@ -1,14 +1,14 @@
 import os
 import logging
-import traceback
+import random
 from functools import wraps
+
 import sqlite3
 from flask import Flask, request, jsonify, session, render_template, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
-import random
 
 # --- МАРКЕР ВЕРСИИ ---
-print("=== VERSION: 2026-07-26-FIX-ORDER-LOGIN_REQUIRED-AMVERA-SAFE-DB-INIT ===")
+print("=== VERSION: 2026-07-26-FIX-ORDER-LOGIN_REQUIRED-AMVERA-SAFE-DB-INIT-CLEAN-FIGHT ===")
 
 # ==========================================
 # НАСТРОЙКА ЛОГГЕРА (ОДИН РАЗ)
@@ -34,7 +34,7 @@ DB_PATH = os.getenv('DATABASE_PATH', os.path.join(data_dir, 'game.db'))
 logger.info(f"[INFO] База данных будет использоваться по пути: {DB_PATH}")
 
 # ==========================================
-# ДЕКОРАТОР АВТОРИЗАЦИИ (ОБЯЗАТЕЛЬНО ВЫШЕ ВСЕХ РОУТОВ)
+# ДЕКОРАТОР АВТОРИЗАЦИИ
 # ==========================================
 def login_required(f):
     @wraps(f)
@@ -61,10 +61,20 @@ def get_db():
 def init_db_if_needed():
     """Ленивая инициализация: создаём БД только если файла нет."""
     if os.path.exists(DB_PATH):
-        logger.info("[INIT] Файл БД найден, пропускаем создание таблиц.")
-        return
-
-    logger.info("[INIT] Создаём БД и таблицы (файл не найден)...")
+        # Проверка существования таблицы characters (более надежно, чем просто наличие файла)
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='characters';")
+            if cur.fetchone():
+                logger.info("[INIT] Таблицы уже существуют, пропускаем создание.")
+                conn.close()
+                return
+            conn.close()
+        except Exception as e:
+            logger.error(f"[INIT] Ошибка проверки таблиц: {e}")
+            
+    logger.info("[INIT] Создаём БД и таблицы (файл не найден или таблицы отсутствуют)...")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
@@ -115,9 +125,6 @@ def init_db_if_needed():
     conn.close()
     logger.info("[INIT] Таблицы успешно созданы.")
 
-# ВАЖНО: НЕ вызываем init_db() сразу при импорте!
-# Инициализацию делаем лениво: при первом запросе или явно через отдельный эндпоинт.
-
 # ==========================================
 # ИГРОВАЯ ЛОГИКА
 # ==========================================
@@ -132,6 +139,7 @@ def get_class_stats(cls_name):
     clean_name = cls_name.lower().strip() if cls_name else ""
     return base_stats.get(clean_name, {"attack": 5, "defense": 3})
 
+# Безопасный импорт внешних модулей (если их нет - сервер не упадет)
 try:
     from items import ITEMS_DB, calc_stats
     from classes import get_class_stats as external_get_class_stats
@@ -164,7 +172,7 @@ def register_page():
 # ==========================================
 @app.route('/register', methods=['POST'])
 def register():
-    init_db_if_needed()  # Ленивая инициализация
+    init_db_if_needed()
 
     data = request.get_json() or {}
     username = (data.get('username') or '').strip()
@@ -273,7 +281,7 @@ def logout():
     return '', 204
 
 # ==========================================
-# БОЕВАЯ МЕХАНИКА
+# БОЕВАЯ МЕХАНИКА (ИСПРАВЛЕНО)
 # ==========================================
 @app.route('/fight-action', methods=['POST'])
 @login_required
@@ -313,7 +321,7 @@ def fight_action():
         level = char.get('level', 1)
         next_level_exp = char.get('next_level_exp', 100)
         
-        # Парсим инвентарь в список (если фронтенд ждёт список)
+        # Парсим инвентарь в список
         inv_str = char['inventory'] or ''
         inventory_list = [x.strip() for x in inv_str.split(',') if x.strip()]
 
@@ -392,6 +400,7 @@ def fight_action():
             }
         }
 
+        logger.info(f"[FIGHT] Бой завершён для char_id={char_id}: победа={is_victory}, смерть={is_dead}")
         return jsonify(response_data), 200
 
     except sqlite3.Error as e:
@@ -405,43 +414,6 @@ def fight_action():
     finally:
         if conn:
             conn.close()
-
-        # ... (код до response_data)
-
-        response_data = {
-            'player': {
-                'id': char['id'],
-                'name': char_name,
-                'class': char_class,
-                'level': level,
-                'adenas': adenas,
-                'exp': exp,
-                'next_level_exp': next_level_exp,
-                'current_hp': current_hp,
-                'max_hp': max_hp,
-                'attack': attack,
-                'defense': defense,
-                'hp_percent': int((current_hp / max(1, max_hp)) * 100),
-                'location': location,
-                # Правильно берём инвентарь из строки из БД и превращаем в список
-                'inventory': [x.strip() for x in (char['inventory'] or '').split(',') if x.strip()]
-            },
-            'log': '\n'.join(log_messages),
-            'is_victory': is_victory,
-            'is_dead': is_dead
-        }
-
-        logger.info(f"[FIGHT] Бой завершён для char_id={char_id}: победа={is_victory}, смерть={is_dead}")
-        return jsonify(response_data), 200
-
-    except sqlite3.Error as e:
-        conn.rollback()
-        logger.error(f"[FIGHT] Ошибка БД: {e}")
-        return jsonify({'error': 'Ошибка базы данных', 'details': str(e)}), 500
-    finally:
-        if conn:
-            conn.close()
-
 
 
 # ==========================================
@@ -612,71 +584,67 @@ def teleport():
 
 
 # ==========================================
-# СОХРАНЕНИЕ РЕЗУЛЬТАТА БОЯ (СЕРВЕРНАЯ ПРОВЕРКА)
+# ПРОКАЧКА (ДЛЯ АДМИНА/ТЕСТОВ)
 # ==========================================
-@app.route('/player-death', methods=['POST'])
-def player_death():
+@app.route('/player-levelup', methods=['POST'])
+@login_required
+def player_levelup():
     init_db_if_needed()
 
-    data = request.get_json()
-    char_id = data.get('char_id')
-    penalty = data.get('penalty', 0)
+    char_id = session.get('char_id')
+    exp_add = request.args.get('exp_add', type=int, default=0)
 
-    if char_id is None or not isinstance(char_id, int):
-        return jsonify({"error": "Требуется корректный char_id"}), 400
+    if exp_add <= 0:
+        return jsonify({"error": "exp_add должен быть > 0"}), 400
 
-    conn = get_db()
-    if conn is None:
-        return jsonify({'error': 'Ошибка сервера: не удалось открыть БД'}), 500
+    try:
+        conn = get_db()
+        if conn is None:
+            return jsonify({'error': 'Ошибка сервера: не удалось открыть БД'}), 500
 
-    cur = conn.cursor()
+        cur = conn.cursor()
+        cur.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Персонаж не найден"}), 404
 
-    cur.execute('SELECT max_hp FROM characters WHERE id = ?', (char_id,))
-    row = cur.fetchone()
-    max_hp = row['max_hp'] if row else 50
+        current_exp = row['exp']
+        next_level_exp = row['next_level_exp']
+        level = row['level']
 
-    cur.execute(
-        'UPDATE characters SET adenas = adenas - ?, current_hp = ? WHERE id = ?',
-        (penalty, max_hp, char_id)
-    )
+        new_exp = current_exp + exp_add
+        level_up_count = 0
 
-    cur.execute('UPDATE characters SET location = ? WHERE id = ?', ('city', char_id))
+        while new_exp >= next_level_exp:
+            level += 1
+            level_up_count += 1
+            new_exp -= next_level_exp
+            next_level_exp = int(next_level_exp * 1.2)
+            if next_level_exp < 100:
+                next_level_exp = 100  # минимальная планка опыта
 
-    conn.commit()
-    conn.close()
+        # Обновляем персонажа
+        cur.execute('''
+            UPDATE characters
+            SET level = ?, exp = ?, next_level_exp = ?
+            WHERE id = ?
+        ''', (level, new_exp, next_level_exp, char_id))
+        conn.commit()
+        conn.close()
 
-    return jsonify({
-        'ok': True,
-        'message': 'Вы погибли и возродились в городе.',
-        'current_hp': max_hp
-    })
+        logger.info(f"Levelup: char_id={char_id}, уровень={level}, прокачек={level_up_count}")
+        return jsonify({
+            "ok": True,
+            "level": level,
+            "exp": new_exp,
+            "next_level_exp": next_level_exp,
+            "level_ups": level_up_count
+        })
 
-
-@app.route('/fight-result', methods=['POST'])
-def fight_result():
-    init_db_if_needed()
-
-    data = request.get_json()
-    char_id = data.get('char_id')
-    final_adenas = data.get('final_adenas')
-    final_exp = data.get('final_exp')
-
-    if char_id is None or final_adenas is None or final_exp is None:
-        return jsonify({"error": "Требуется char_id, final_adenas, final_exp"}), 400
-
-    conn = get_db()
-    if conn is None:
-        return jsonify({'error': 'Ошибка сервера: не удалось открыть БД'}), 500
-
-    cur = conn.cursor()
-    cur.execute(
-        'UPDATE characters SET adenas = ?, exp = ? WHERE id = ?',
-        (final_adenas, final_exp, char_id)
-    )
-    conn.commit()
-    conn.close()
-
-    return jsonify({'ok': True})
+    except Exception as e:
+        logger.error(f"Levelup error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 # ==========================================
@@ -687,7 +655,7 @@ def fight_result():
 def give_command():
     init_db_if_needed()
 
-    char_id = session.get('char_id')
+    # Проверка прав админа
     if not session.get('is_admin'):
         return jsonify({"error": "Нет прав администратора"}), 403
 
@@ -733,69 +701,9 @@ def give_command():
 
 
 # ==========================================
-# ПРОКАЧКА (ДЛЯ АДМИНА/ТЕСТОВ)
-# ==========================================
-@app.route('/player-levelup', methods=['POST'])
-@login_required
-def player_levelup():
-    init_db_if_needed()
-
-    char_id = session.get('char_id')
-    exp_add = request.args.get('exp_add', type=int, default=0)
-
-    if exp_add <= 0:
-        return jsonify({"error": "exp_add должен быть > 0"}), 400
-
-    try:
-        conn = get_db()
-        if conn is None:
-            return jsonify({'error': 'Ошибка сервера: не удалось открыть БД'}), 500
-
-        cur = conn.cursor()
-        cur.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
-        row = cur.fetchone()
-        if not row:
-            conn.close()
-            return jsonify({"error": "Персонаж не найден"}), 404
-
-        current_exp = row['exp']
-        next_level_exp = row['next_level_exp']
-        level = row['level']
-
-        new_exp = current_exp + exp_add
-        level_up_count = 0
-
-        while new_exp >= next_level_exp:
-            level += 1
-            level_up_count += 1
-            new_exp -= next_level_exp
-            next_level_exp = int(next_level_exp * 1.2)
-            if next_level_exp < 100:
-                next_level_exp = 100
-
-        cur.execute('''
-            UPDATE characters
-            SET exp = ?, level = ?, next_level_exp = ?
-            WHERE id = ?
-        ''', (new_exp, level, next_level_exp, char_id))
-        conn.commit()
-        conn.close()
-
-        return jsonify({
-            "ok": True,
-            "level_ups": level_up_count,
-            "new_level": level,
-            "remaining_exp": new_exp,
-            "next_level_exp": next_level_exp
-        })
-    except Exception as e:
-        logger.error(f"Levelup error: {e}")
-        return jsonify({"error": "Ошибка прокачки"}), 500
-
-
-# ==========================================
-# ТОЧКА ВХОДА ДЛЯ AMVERA
+# ТОЧКА ВХОДА (для Amvera/Gunicorn)
 # ==========================================
 if __name__ == '__main__':
-    # Только для локальной отладки
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Для локального запуска (python server.py)
+    app.run(host='0.0.0.0', port=8080, debug=False)
+
