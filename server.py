@@ -10,13 +10,12 @@ from flask import Flask, request, jsonify, session, render_template, url_for, re
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # --- Импорт внешних модулей ---
-# Убедись, что файлы cities.py и items.py лежат в той же папке, что и server.py
 try:
     from cities import CITIES, is_valid_city, get_city_mob_module
     from items import ITEMS_DB, get_item_by_id
 except ImportError as e:
     print(f"[CRITICAL] Не удалось импортировать модули cities/items. Ошибка: {e}")
-    print("[HINT] Создай файлы cities.py и items.py в корне проекта.")
+    print("[HINT] Создай файлы cities.py и items.py в корне проекта и закоммить их в Git.")
     exit(1)
 
 # ==========================================
@@ -49,7 +48,6 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'char_id' not in session:
-            # Если запрос API (JSON) или AJAX, возвращаем 401
             if request.path.startswith('/api') or request.headers.get('Accept') == 'application/json':
                 return jsonify({"error": "Требуется авторизация"}), 401
             return redirect(url_for('login_page'))
@@ -69,6 +67,7 @@ def get_db():
         return None
 
 def init_db_if_needed():
+    # Если файл БД уже есть и таблица characters существует — выходим
     if os.path.exists(DB_PATH):
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -80,7 +79,7 @@ def init_db_if_needed():
             conn.close()
         except Exception as e:
             logger.error(f"[INIT] Ошибка проверки таблиц: {e}")
-            
+
     logger.info("[INIT] Создаём БД и таблицы...")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -121,6 +120,7 @@ def init_db_if_needed():
     );
     ''')
 
+    # Попытка добавить колонку is_admin, если её нет (игнорируем ошибку, если колонка уже есть)
     try:
         cur.execute("ALTER TABLE accounts ADD COLUMN is_admin INTEGER DEFAULT 0")
         logger.info("[MIGRATION] Добавлена колонка is_admin")
@@ -133,19 +133,16 @@ def init_db_if_needed():
 
 
 def get_mobs_for_city(city_name: str):
-    """
-    Динамически загружает модуль мобов для города и возвращает список MOBS.
-    """
     module_name = get_city_mob_module(city_name)
     try:
         module = importlib.import_module(module_name)
         mobs = getattr(module, "MOBS", [])
         return mobs
     except ImportError as e:
-        print(f"[ERROR] Не удалось загрузить мобов для города '{city_name}': {e}")
+        logger.warning(f"[ERROR] Не удалось загрузить мобов для города '{city_name}': {e}")
         return []
     except Exception as e:
-        print(f"[ERROR] Ошибка при получении мобов для города '{city_name}': {e}")
+        logger.error(f"[ERROR] Ошибка при получении мобов для города '{city_name}': {e}")
         return []
 
 
@@ -192,8 +189,10 @@ def register():
     cur = conn.cursor()
     try:
         pwd_hash = generate_password_hash(password)
+
+        # ИСПРАВЛЕНИЕ: берем из кортежа
         cur.execute('SELECT COUNT(*) FROM accounts')
-        account_count = cur.fetchone() # Исправлено: fetchone() возвращает кортеж
+        account_count = cur.fetchone()
         is_admin = 1 if account_count == 0 else 0
 
         cur.execute(
@@ -246,33 +245,36 @@ def login():
         return jsonify({'error': 'Ошибка сервера: не удалось открыть БД'}), 500
 
     cur = conn.cursor()
-    cur.execute('SELECT id, password_hash, is_admin FROM accounts WHERE username = ? AND is_active = 1', (username,))
-    row = cur.fetchone()
-    conn.close()
+    try:
+        cur.execute('SELECT id, password_hash, is_admin FROM accounts WHERE username = ? AND is_active = 1', (username,))
+        row = cur.fetchone()
 
-    if not row:
-        return jsonify({"error": "Неверный логин или пароль"}), 401
+        if not row:
+            return jsonify({"error": "Неверный логин или пароль"}), 401
 
-    account_id, stored_hash, is_admin = row
-    if not check_password_hash(stored_hash, password):
-        return jsonify({"error": "Неверный логин или пароль"}), 401
+        account_id, stored_hash, is_admin = row
+        if not check_password_hash(stored_hash, password):
+            return jsonify({"error": "Неверный логин или пароль"}), 401
 
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute('SELECT id FROM characters WHERE account_id = ? LIMIT 1', (account_id,))
-    char_row = cur.fetchone()
-    conn.close()
+        # Ищем персонажа этого аккаунта
+        cur.execute('SELECT id FROM characters WHERE account_id = ? LIMIT 1', (account_id,))
+        char_row = cur.fetchone()
 
-    if not char_row:
-        return jsonify({"error": "У аккаунта нет персонажей"}), 404
+        if not char_row:
+            return jsonify({"error": "У аккаунта нет персонажей"}), 404
 
-    char_id = char_row['id']
-    session['char_id'] = char_id
-    session['account_id'] = account_id
-    if is_admin:
-        session['is_admin'] = True
+        char_id = char_row['id']
+        session['char_id'] = char_id
+        session['account_id'] = account_id
+        if is_admin:
+            session['is_admin'] = True
 
-    return jsonify({"ok": True, "char_id": char_id})
+        return jsonify({"ok": True, "char_id": char_id})
+    except Exception as e:
+        logger.error(f"[LOGIN] Ошибка: {e}")
+        return jsonify({"error": "Ошибка сервера"}), 500
+    finally:
+        conn.close()
 
 @app.route('/logout', methods=['POST'])
 @login_required
@@ -283,7 +285,6 @@ def logout():
 # ==========================================
 # БОЕВАЯ МЕХАНИКА
 # ==========================================
-
 @app.route('/api/fight/start', methods=['POST'])
 @login_required
 def start_fight():
@@ -298,12 +299,14 @@ def start_fight():
     cur = conn.cursor()
     cur.execute("SELECT location FROM characters WHERE id = ?", (char_id,))
     row = cur.fetchone()
+    conn.close()
+
     if not row:
         return jsonify({"error": "Персонаж не найден"}), 404
 
     city_name = row["location"]
     mobs = get_mobs_for_city(city_name)
-    
+
     if not mobs:
         enemy = {"name": "Обычный моб", "hp": 50, "attack": 8, "defense": 2, "adenas": 10, "exp": 20}
     else:
@@ -315,7 +318,6 @@ def start_fight():
         "started_at": time.time()
     }
 
-    conn.close()
     return jsonify({
         "ok": True,
         "message": f"Вы вступили в бой с {enemy['name']}!",
@@ -389,7 +391,7 @@ def fight_action():
         else:
             # Ход моба
             mob_dmg = max(1, int(mob["attack"] * (0.8 + random.random() * 0.4)) - defense)
-            current_hp -= mob_dmg
+            current_hp = max(0, current_hp - mob_dmg)
             log_messages.append(f"👹 {mob['name']} нанёс вам {mob_dmg} урона. У вас осталось {current_hp} HP.")
 
             if current_hp <= 0:
@@ -450,10 +452,6 @@ def fight_action():
 @app.route('/player-status')
 @login_required
 def player_status():
-    """
-    Возвращает полный статус игрока И список всех городов.
-    Это решает проблему 'Загрузка статуса...', так как фронтенд получает всё сразу.
-    """
     init_db_if_needed()
     char_id = session.get('char_id')
     if not char_id:
@@ -478,7 +476,6 @@ def player_status():
     max_hp = max(1, data.get('max_hp', 1))
     current_hp = max(0, data.get('current_hp', 0))
 
-    # Формируем ответ: данные игрока + список городов (из модуля cities)
     response_data = {
         'name': data['name'],
         'class': data['class'],
@@ -493,7 +490,7 @@ def player_status():
         'hp_percent': int((current_hp / max_hp) * 100),
         'location': data.get('location', 'Аэрдмор'),
         'inventory': data['inventory'],
-        'cities': CITIES  # <-- ВОТ ЭТОГО НЕ ХВАТАЛО РАНЬШЕ
+        'cities': CITIES
     }
     return jsonify(response_data)
 
@@ -671,10 +668,6 @@ def player_levelup():
 @app.route('/debug/reset-player', methods=['POST'])
 @login_required
 def debug_reset_player():
-    """
-    Сбрасывает HP, телепортирует в Аэрдмор.
-    ВНИМАНИЕ: Не используй в продакшене без дополнительной проверки прав!
-    """
     init_db_if_needed()
     char_id = session.get('char_id')
     if not char_id:
@@ -686,7 +679,6 @@ def debug_reset_player():
             return jsonify({"error": "Ошибка БД"}), 500
 
         cur = conn.cursor()
-        # Сброс HP до максимума (нужно сначала получить max_hp)
         cur.execute('SELECT max_hp FROM characters WHERE id = ?', (char_id,))
         row = cur.fetchone()
         if not row:
@@ -717,34 +709,14 @@ def debug_reset_player():
 if __name__ == '__main__':
     # Инициализация БД при старте сервера
     init_db_if_needed()
-    
-    # Проверка наличия файлов cities.py и items.py
+
+    # ВАЖНО: на Amvera/Docker не создавай файлы автоматически.
+    # Эти файлы должны быть в Git. Блок ниже можно удалить в продакшене.
     if not os.path.exists('cities.py'):
-        logger.warning("[CHECK] Файл cities.py не найден! Создаю шаблон...")
-        with open('cities.py', 'w', encoding='utf-8') as f:
-            f.write('''
-CITIES = [
-    {"name": "Аэрдмор", "description": "Столица королевства, здесь безопасно."},
-    {"name": "Тёмный Лес", "description": "Опасные заросли, много диких зверей."},
-    {"name": "Вулкан Огня", "description": "Жаркое место, обитают огненные элементали."}
-]
-
-def is_valid_city(name):
-    return any(c['name'] == name for c in CITIES)
-
-def get_city_mob_module(city_name):
-    # Возвращает имя модуля, например, "mobs_aerdmor"
-    clean_name = city_name.lower().replace(' ', '_')
-    return f"mobs_{clean_name}"
-''')
-        logger.warning("[CHECK] Файл cities.py создан. Теперь нужно создать файлы мобов (например, mobs_aerdmor.py).")
-
+        logger.warning("[CHECK] Файл cities.py не найден! Создай его вручную и закоммить в Git.")
     if not os.path.exists('items.py'):
-        logger.warning("[CHECK] Файл items.py не найден! Создаю пустой шаблон...")
-        with open('items.py', 'w', encoding='utf-8') as f:
-            f.write('ITEMS_DB = {}\n')
+        logger.warning("[CHECK] Файл items.py не найден! Создай его вручную и закоммить в Git.")
 
     # Запуск Flask
-    # debug=True полезен для разработки, но в продакшене (Amvera/Docker) ставь False
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
+    # debug=False для продакшена
+    app.run(host='0.0.0.0', port=5000, debug=False)
