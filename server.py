@@ -281,8 +281,6 @@ def fight_action():
     init_db_if_needed()
 
     data = request.get_json(silent=True) or {}
-    
-    # 1. Получаем char_id из сессии (надежнее, чем из JSON, чтобы избежать подмены)
     char_id = session.get('char_id')
     
     if not char_id:
@@ -295,14 +293,14 @@ def fight_action():
     cursor = conn.cursor()
 
     try:
-        # 2. Получаем данные игрока
+        # Получаем данные игрока
         cursor.execute('SELECT * FROM characters WHERE id = ?', (char_id,))
         char = cursor.fetchone()
         
         if not char:
             return jsonify({'error': 'Персонаж не найден'}), 404
 
-        # Распаковываем данные с безопасными значениями по умолчанию
+        # Безопасное извлечение данных
         current_hp = max(0, char['current_hp'])
         max_hp = max(1, char['max_hp'])
         attack = max(1, char['attack'])
@@ -314,12 +312,10 @@ def fight_action():
         char_class = char['class']
         level = char.get('level', 1)
         next_level_exp = char.get('next_level_exp', 100)
-
-        # Проверка локации (опционально, но полезно)
-        if location != 'outskirts': 
-            # Если хочешь разрешить бой только в окрестностях, раскомментируй:
-            # return jsonify({'error': 'Вы не в зоне боя! Телепортируйтесь в окрестности.', 'is_victory': False}), 403
-            pass 
+        
+        # Парсим инвентарь в список (если фронтенд ждёт список)
+        inv_str = char['inventory'] or ''
+        inventory_list = [x.strip() for x in inv_str.split(',') if x.strip()]
 
         log_messages = []
         is_victory = False
@@ -331,7 +327,6 @@ def fight_action():
         mob_defense = 2
 
         # --- ХОД ИГРОКА ---
-        # Формула урона: (Атака * случайный множитель) - Защита моба
         player_dmg = max(1, int(attack * (0.8 + random.random() * 0.4)) - mob_defense)
         mob_hp -= player_dmg
         log_messages.append(f"⚔️ Вы нанесли мобу {player_dmg} урона. У моба осталось {mob_hp} HP.")
@@ -365,7 +360,7 @@ def fight_action():
                 location = 'city'
                 log_messages.append("🏙 Вы были телепортированы в город и воскресли.")
 
-        # --- СОХРАНЕНИЕ В БД ---
+        # --- СОХРАНЕНИЕ В БД (ЕДИНСТВЕННОЕ МЕСТО СОХРАНЕНИЯ) ---
         cursor.execute('''
             UPDATE characters
             SET current_hp = ?, adenas = ?, exp = ?, location = ?
@@ -373,7 +368,7 @@ def fight_action():
         ''', (current_hp, adenas, exp, location, char_id))
         conn.commit()
 
-        # --- ФОРМИРОВАНИЕ ОТВЕТА (ГАРАНТИРОВАННАЯ СТРУКТУРА) ---
+        # --- ФОРМИРОВАНИЕ ОТВЕТА ---
         response_data = {
             'success': True,
             'log': '\n'.join(log_messages),
@@ -392,7 +387,8 @@ def fight_action():
                 'attack': attack,
                 'defense': defense,
                 'hp_percent': int((current_hp / max_hp) * 100),
-                'location': location
+                'location': location,
+                'inventory': inventory_list
             }
         }
 
@@ -401,7 +397,6 @@ def fight_action():
     except sqlite3.Error as e:
         conn.rollback()
         logger.error(f"[FIGHT] Критическая ошибка БД: {e}")
-        # Возвращаем безопасный ответ даже при ошибке, чтобы JS не упал
         return jsonify({
             'success': False,
             'error': 'Ошибка базы данных',
