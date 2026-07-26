@@ -512,22 +512,41 @@ function updateStatusBox() {
     }
   }
 
-  function startChatPolling() {
-    clearInterval(chatIntervalId);
-    chatIntervalId = setInterval(async () => {
-      try {
-        const res = await fetch('/api/chat/new');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (Array.isArray(data.messages) && data.messages.length > 0) {
-          data.messages.forEach(msg => addChatMessage(msg.sender, msg.text, msg.is_system || false));
-        }
-      } catch (e) {
-        console.error('Chat polling error:', e);
-      }
-    }, 3000); // опрос каждые 3 секунды
-  }
+  let lastChatId = 0;
 
+function startChatPolling() {
+  clearInterval(chatIntervalId);
+  chatIntervalId = setInterval(async () => {
+    try {
+      const url = `/api/chat/new?last_id=${lastChatId}`;
+      const res = await fetch(url);
+
+      if (res.status === 404) {
+        // Если эндпоинта ещё нет — тихо игнорируем, чтобы не спамить ошибками
+        console.log('[CHAT] Эндпоинт /api/chat/new ещё не настроен');
+        return;
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.error('Chat polling error:', errData.error || res.status);
+        return;
+      }
+
+      const data = await res.json();
+      if (!Array.isArray(data.messages)) return;
+
+      data.messages.forEach(msg => {
+        addChatMessage(msg.sender, msg.text, msg.is_system || false);
+        if (msg.id && msg.id > lastChatId) {
+          lastChatId = msg.id;
+        }
+      });
+    } catch (e) {
+      console.error('Chat polling catch error:', e);
+    }
+  }, 3000);
+}
   // Обработка Enter в чате
   if (chatInput) {
     chatInput.addEventListener('keydown', e => {

@@ -58,13 +58,9 @@ def login_required(f):
 # РАБОТА С БД
 # ==========================================
 def get_db():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except sqlite3.OperationalError as e:
-        logger.error(f"[DB] Не удалось открыть БД по пути {DB_PATH}: {e}")
-        return None
+    conn = sqlite3.connect('classrise.db')
+    conn.row_factory = sqlite3.Row  # это критично!
+    return conn
 
 def init_db_if_needed():
     # Если файл БД уже есть и таблица characters существует — выходим
@@ -498,27 +494,26 @@ def player_status():
 # ЧАТ
 # ==========================================
 
-@app.route('/api/chat/history', methods=['GET'])
+@app.route('/api/chat/new', methods=['GET'])
 @login_required
-def chat_history():
+def chat_new():
     init_db_if_needed()
-    limit = request.args.get('limit', 30, type=int)
-    if limit > 100:
-        limit = 100
-    char_id = session.get('char_id')
+    last_id = request.args.get('last_id', 0, type=int)
 
     conn = get_db()
     if conn is None:
         return jsonify({'error': 'Ошибка сервера: не удалось открыть БД'}), 500
 
     cur = conn.cursor()
+    # Получаем только новые сообщения после last_id
     cur.execute('''
         SELECT cm.id, c.name AS player_name, cm.text, cm.created_at
         FROM chat_messages cm
         JOIN characters c ON cm.char_id = c.id
-        ORDER BY cm.id DESC
-        LIMIT ?
-    ''', (limit,))
+        WHERE cm.id > ?
+        ORDER BY cm.id ASC
+        LIMIT 50
+    ''', (last_id,))
     rows = cur.fetchall()
     conn.close()
 
@@ -526,13 +521,14 @@ def chat_history():
     for r in rows:
         messages.append({
             "id": r["id"],
-            "player_name": r["player_name"],
+            "sender": r["player_name"],
             "text": r["text"],
-            "created_at": r["created_at"]
+            "is_system": False,
+            "time": r["created_at"]
         })
-    messages.reverse()
-    return jsonify(messages)
 
+    # Фронтенд ожидает объект с ключом messages
+    return jsonify({"messages": messages})
 @app.route('/chat-send', methods=['POST'])
 @login_required
 def chat_send():
