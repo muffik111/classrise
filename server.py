@@ -497,7 +497,8 @@ def player_status():
 # ==========================================
 # ЧАТ
 # ==========================================
-@app.route('/chat-history')
+
+@app.route('/api/chat/history', methods=['GET'])
 @login_required
 def chat_history():
     init_db_if_needed()
